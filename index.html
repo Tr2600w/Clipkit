@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ClipKit — Newsclipping Data Tool</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="tb">
+  <div class="tb-logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+  </div>
+  <span class="tb-name">ClipKit</span>
+  <span class="tb-sub">Newsclipping Data Tool</span>
+  <div class="tb-tabs">
+    <button class="tbtab on" onclick="sv('entry')">📝 กรอกข้อมูล <span id="dupBadge" style="display:none;background:#ef4444;color:#fff;font-size:9px;font-weight:500;padding:1px 6px;border-radius:9999px;margin-left:3px;vertical-align:middle">ซ้ำ</span></button>
+    <button class="tbtab" onclick="sv('db')">🗂 ฐานข้อมูล</button>
+  </div>
+  <div class="tb-right">
+    <!-- Project selector -->
+    <button onclick="openSettings()" title="ตั้งค่า Google Sheets"
+      style="background:none;border:2px solid var(--bdr);border-radius:var(--r2);width:34px;height:34px;cursor:pointer;font-size:15px;color:var(--text2);display:flex;align-items:center;justify-content:center;transition:.15s"
+      onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--bdr)'">⚙</button>
+    <button class="proj-btn" id="projBtn" onclick="togProjDD()">
+      <span>📁</span>
+      <span class="proj-name" id="projBtnName">Default</span>
+      <span style="font-size:9px;opacity:.5">▼</span>
+    </button>
+    <div class="proj-dropdown" id="projDD">
+      <div class="proj-dd-hdr">📁 เลือกโปรเจกต์</div>
+      <div id="projList"></div>
+      <div class="proj-new">
+        <input type="text" id="projNewName" placeholder="ชื่อโปรเจกต์ใหม่..." maxlength="40"
+          onkeydown="if(event.key==='Enter')createProject()">
+        <button onclick="createProject()">+ สร้าง</button>
+      </div>
+    </div>
+    <span class="tb-badge" id="topBadge">0 รายการ</span>
+    <button class="btn-export" id="syncBtn" onclick="syncToSheets()" title="Append รายการใหม่ขึ้น Sheets"
+      style="background:linear-gradient(135deg,#059669,#0d9488);display:none">☁ Sync</button>
+    <button class="btn-export" id="owBtn" onclick="overwriteSheets()" title="เขียนทับ Sheet ด้วยข้อมูลปัจจุบัน"
+      style="background:linear-gradient(135deg,#b45309,#d97706);display:none;font-size:11px">↺ Overwrite</button>
+    <button class="btn-export" onclick="exportExcel()">⬇ Excel</button>
+  </div>
+</div>
+
+<!-- ═══ ENTRY VIEW ═══ -->
+<div class="app" id="vEntry">
+
+  <!-- FORM -->
+  <div class="col-form">
+    <div class="form-body" onkeydown="onFormKeydown(event)">
+
+      <div class="sec">
+        <div class="sec-title">ข้อมูลข่าว</div>
+        <div class="frow">
+          <div class="flbl">DATE <span class="req">*</span></div>
+          <input class="finp" type="date" id="fDate">
+        </div>
+        <div class="frow">
+          <div class="flbl">URL / LINK</div>
+          <input class="finp" type="url" id="fUrl" placeholder="https://..." oninput="onUrl()">
+          <div class="url-hint" id="urlHint">
+            <span class="hdot" id="hintDot"></span>
+            <span id="hintTxt" style="font-size:11px"></span>
+          </div>
+        </div>
+        <div class="frow">
+          <div class="flbl">PUBLICATION <span class="req">*</span></div>
+          <div class="acw">
+            <input class="aci" id="fPub" placeholder="พิมพ์ค้นหา..." autocomplete="off"
+              oninput="onPubIn()" onkeydown="onPubKey(event)" onfocus="onPubIn()" onchange="upAuto()">
+            <div class="acd" id="acDrop"></div>
+          </div>
+        </div>
+        <div class="frow">
+          <div class="flbl">PLATFORM</div>
+          <select class="finp" id="fPlat" onchange="onPlatChange()">
+            <option value="">— เลือก —</option>
+            <option>Facebook</option><option>Instagram</option><option>X</option>
+            <option>YouTube</option><option>TikTok</option><option>LINE TODAY</option>
+            <option>LINE</option><option>TV</option><option>Website</option>
+            <option>Lemon8</option><option>Threads</option><option>MSN</option>
+            <option value="__custom__">➕ เพิ่ม platform เอง...</option>
+          </select>
+          <div id="customPlatPanel" style="display:none;margin-top:6px">
+            <div style="display:flex;gap:6px;align-items:center">
+              <input class="finp" type="text" id="customPlatInput"
+                placeholder="ชื่อ platform เช่น Pantip, Blockdit"
+                style="flex:1;font-size:13px"
+                oninput="upAuto();onPubIn()">
+              <button onclick="saveCustomPlat()"
+                style="background:var(--grad);color:#fff;border:none;padding:9px 13px;border-radius:var(--r2);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);white-space:nowrap">
+                บันทึก
+              </button>
+            </div>
+            <div style="font-size:10px;color:var(--text3);margin-top:4px">กด "บันทึก" เพื่อเพิ่มเข้า dropdown</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">ผลลัพธ์อัตโนมัติ</div>
+        <div class="pr-card" onclick="openManualOverride()" style="cursor:pointer" title="คลิกเพื่อแก้ค่า PR">
+          <div>
+            <div class="pr-lbl">PR VALUE <span style="font-size:9px;opacity:.6;font-weight:400">คลิกเพื่อแก้</span></div>
+            <div class="pr-val empty" id="prVal">— เลือกสื่อก่อน</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">
+            <div class="pr-tier" id="prTier" style="display:none"></div>
+            <div style="font-size:18px;opacity:.4">✏</div>
+          </div>
+        </div>
+        <div class="frow">
+          <div class="flbl" style="font-size:11px">FILE NAME <span class="abadge">AUTO</span></div>
+          <div class="fauto empty" id="fnBox">—</div>
+        </div>
+        <div class="frow">
+          <div class="flbl" style="font-size:11px">LOGO FILE <span class="lbadge">AUTO</span>
+            <span style="font-size:10px;color:var(--text3);font-weight:400;margin-left:4px">คลิกเพื่อแก้</span>
+          </div>
+          <div class="flogo empty" id="logoBox" onclick="togLogoEdit()" style="cursor:pointer" title="คลิกเพื่อแก้ชื่อโลโก้">—</div>
+          <div id="logoEditWrap" style="display:none;margin-top:6px">
+            <div class="logo-sug-wrap">
+              <input class="finp" type="text" id="logoManual" placeholder="ค้นหาชื่อโลโก้ เช่น Thairath"
+                style="font-size:12px;padding:7px 11px" oninput="onLogoManual()" onfocus="onLogoManual()">
+              <div class="logo-sug-dd" id="logoSuggestions"></div>
+            </div>
+            <div style="display:flex;gap:6px;margin-top:5px">
+              <button onclick="applyLogoEdit()" style="background:var(--grad);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--font)">ใช้</button>
+              <button onclick="togLogoEdit()" style="background:none;border:2px solid var(--bdr);color:var(--text2);padding:6px 10px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--font)">ยกเลิก</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <button class="man-tog" id="manTog" onclick="togMan()">
+          <span>✏ แก้ PR / ชื่อสื่อ (Manual)</span><span class="arr">▼</span>
+        </button>
+        <div class="man-sec" id="manSec">
+          <div style="font-size:10px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:1px">Manual Override</div>
+          <div class="mrow"><label>ชื่อสื่อ</label><input class="minp" id="mPub" type="text" placeholder="ชื่อสื่อ" oninput="_upAutoDebounced()"></div>
+          <div class="mrow"><label>Platform</label><input class="minp" id="mPlat" type="text" placeholder="เช่น Facebook" oninput="_upAutoDebounced()"></div>
+          <div class="mrow"><label>PR Value</label><input class="minp" id="mPR" type="number" placeholder="360000" oninput="_upAutoDebounced()"></div>
+          <div class="mrow"><label>Link</label><input class="minp" id="mLink" type="text" placeholder="URL ที่จะแสดง" oninput="_upAutoDebounced()"></div>
+          <div style="border-top:1px solid #fcd34d;padding-top:9px">
+            <label style="display:flex;align-items:center;gap:7px;font-size:12px;color:#92400e;cursor:pointer;font-weight:600">
+              <input type="checkbox" id="autoSaveDB" checked style="width:auto;accent-color:var(--amber)">
+              บันทึกสื่อนี้ลง DB อัตโนมัติ
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">รายละเอียด</div>
+        <div class="frow">
+          <div class="flbl" style="font-size:11px">TYPE</div>
+          <select class="finp" id="fType" style="font-size:12px"
+            onchange="this.dataset.manuallySet=this.value?'1':''">
+            <option value="">—</option><option>Online</option><option>Social Media</option>
+            <option>TV</option><option>Newspaper</option><option>Magazine</option><option>Video</option>
+          </select>
+        </div>
+        <!-- Collapsible HEADLINE + REMARK -->
+        <button class="man-tog" id="detailTog" onclick="togDetail()"
+          style="margin-top:4px;border-style:dashed">
+          <span style="font-size:12px">📝 HEADLINE / REMARK</span>
+          <span class="arr" id="detailArr">▼</span>
+        </button>
+        <div id="detailSec" style="display:none;flex-direction:column;gap:8px;margin-top:6px">
+          <div class="frow" style="margin-bottom:0">
+            <div class="flbl" style="font-size:11px">HEADLINE</div>
+            <textarea class="finp" id="fHead" placeholder="หัวข้อข่าว..." rows="2" style="font-size:12px"></textarea>
+          </div>
+          <div class="frow" style="margin-bottom:0">
+            <div class="flbl" style="font-size:11px">REMARK</div>
+            <input class="finp" id="fRemark" type="text" placeholder="หมายเหตุ..." style="font-size:12px">
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="form-foot">
+      <!-- Validation strip -->
+      <div id="valStrip" style="display:none;margin-bottom:10px;border-radius:8px;overflow:hidden;font-size:12px"></div>
+      <button class="btn-add" id="btnAdd" onclick="addEntry()">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+        เพิ่มรายการ
+        <span style="font-size:10px;opacity:.55;margin-left:4px;font-family:var(--mono)">Enter ↵</span>
+      </button>
+      <button class="btn-sec" onclick="clearForm()">ล้างฟอร์ม</button>
+    </div>
+  </div>
+
+  <!-- TABLE -->
+  <div class="col-main">
+    <div class="tbar">
+      <input class="sbox" id="srch" placeholder="🔍 ค้นหา..." oninput="renderTable()" style="width:180px">
+      <select class="fsel" id="filt" onchange="renderTable()">
+        <option value="">All Platforms</option>
+        <option>Facebook</option><option>Instagram</option><option>YouTube</option>
+        <option>TikTok</option><option>X</option><option>Website</option><option>TV</option>
+      </select>
+      <input type="date" id="filtFrom" oninput="renderTable()" title="ตั้งแต่วันที่" style="font-size:12px;padding:5px 7px;border:1.5px solid var(--bdr);border-radius:var(--r);background:var(--panel);color:var(--text1);cursor:pointer">
+      <input type="date" id="filtTo" oninput="renderTable()" title="ถึงวันที่" style="font-size:12px;padding:5px 7px;border:1.5px solid var(--bdr);border-radius:var(--r);background:var(--panel);color:var(--text1);cursor:pointer">
+      <button class="btn-clr" onclick="clearDateFilter()" id="btnClearDate" style="display:none;font-size:10px;padding:5px 8px" title="ล้างช่วงวันที่">✕ วันที่</button>
+      <span class="tcnt" id="cntLbl">0 รายการ</span>
+      <div style="position:relative;display:inline-block">
+        <button class="btn-clr" onclick="togColMenu()" id="colMenuBtn" title="เลือกคอลัมน์">⊞ คอลัมน์</button>
+        <div id="colMenu" style="display:none;position:absolute;top:calc(100%+4px);right:0;background:var(--panel);border:2px solid var(--bdr);border-radius:var(--r2);padding:10px 12px;z-index:999;box-shadow:0 8px 24px rgba(0,0,0,.12);white-space:nowrap;min-width:160px">
+          <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">แสดงคอลัมน์</div>
+          <label class="col-tog-lbl"><input type="checkbox" id="col_url" checked onchange="renderTable()"> URL</label>
+          <label class="col-tog-lbl"><input type="checkbox" id="col_fn" checked onchange="renderTable()"> File Name</label>
+          <label class="col-tog-lbl"><input type="checkbox" id="col_logo" checked onchange="renderTable()"> Logo</label>
+          <label class="col-tog-lbl"><input type="checkbox" id="col_type" checked onchange="renderTable()"> Type</label>
+          <label class="col-tog-lbl"><input type="checkbox" id="col_status" checked onchange="renderTable()"> Status</label>
+        </div>
+      </div>
+      <button class="btn-clr" onclick="clearAll()" style="color:var(--red);border-color:var(--red)">ล้างทั้งหมด</button>
+      <button class="btn-export" onclick="showExportModal()" style="font-size:11px;padding:7px 13px">⬇ Excel</button>
+    </div>
+    <div class="tw">
+      <table>
+        <thead id="tblHead"><tr>
+          <th id="th_date" onclick="sortBy('date')" style="cursor:pointer;user-select:none">DATE <span id="si_date" style="opacity:.5;font-size:10px">▼</span></th>
+          <th id="th_pub" onclick="sortBy('pub')" style="cursor:pointer;user-select:none">PUBLICATION <span id="si_pub" style="opacity:.5;font-size:10px"></span></th>
+          <th id="th_plat" onclick="sortBy('platform')" style="cursor:pointer;user-select:none">PLATFORM <span id="si_plat" style="opacity:.5;font-size:10px"></span></th>
+          <th id="th_pr" onclick="sortBy('prValue')" style="text-align:right;cursor:pointer;user-select:none">PR VALUE <span id="si_pr" style="opacity:.5;font-size:10px"></span></th>
+          <th id="thFn">FILE NAME</th>
+          <th id="thLogo">LOGO</th>
+          <th id="thType">TYPE</th>
+          <th id="thStatus">STATUS</th>
+          <th style="width:130px"></th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="sbar">
+      <div class="si"><div class="sl">รายการ</div><div class="sv" id="sCount">0</div></div>
+      <div class="sdiv"></div>
+      <div class="si"><div class="sl">Total PR</div><div class="sv g" id="sPR">฿0</div></div>
+      <div class="sdiv"></div>
+      <div class="si"><div class="sl">Facebook</div><div class="sv b" id="sFB">0</div></div>
+      <div class="si"><div class="sl">Instagram</div><div class="sv b" id="sIG">0</div></div>
+      <div class="si"><div class="sl">Website</div><div class="sv b" id="sWeb">0</div></div>
+      <div class="si"><div class="sl">YT/TV</div><div class="sv b" id="sVid">0</div></div>
+      <div class="si"><div class="sl">อื่นๆ</div><div class="sv b" id="sOther">0</div></div>
+      <div class="sdiv"></div>
+      <div class="si"><div class="sl">ไม่พบ DB</div><div class="sv" id="sWarn" style="color:var(--red)">0</div></div>
+    </div>
+  </div>
+
+  <!-- QUICK DB -->
+  <div class="col-qdb">
+    <div class="qdb-hdr">
+      <h3>➕ เพิ่มสื่อลง DB</h3>
+      <p>เพิ่มหรือจัดการใน<br>แท็บ "ฐานข้อมูล"</p>
+    </div>
+    <div class="qdb-body">
+      <div class="qfld"><label>Publication</label><input class="qinp" id="qPub" type="text" placeholder="ชื่อสื่อ"></div>
+      <div class="qfld"><label>Platform</label>
+        <select class="qinp" id="qPlat">
+          <option value="">Website</option><option>Facebook</option><option>Instagram</option>
+          <option>YouTube</option><option>TikTok</option><option>X</option>
+          <option>LINE TODAY</option><option>LINE</option><option>TV</option>
+          <option>Lemon8</option><option>Threads</option><option>MSN</option>
+        </select>
+      </div>
+      <div class="qfld"><label>PR Value</label><input class="qinp" id="qVal" type="text" placeholder="360000"></div>
+      <button class="btn-qadd" onclick="qAdd()">+ เพิ่มลง DB</button>
+      <div style="padding-top:12px;border-top:1px solid var(--bdr);margin-top:4px">
+        <div style="font-size:9px;font-weight:700;color:var(--text3);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px">เพิ่มล่าสุด</div>
+        <div id="dbRecent"><div class="rec-empty">ยังไม่มี</div></div>
+      </div>
+    </div>
+    <!-- Platform Manager -->
+    <div style="padding:12px 14px;border-top:1px solid var(--bdr)">
+      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">🏷 Platform</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px" id="customPlatChips">
+        <span style="font-size:11px;color:var(--text3)">ยังไม่มี custom</span>
+      </div>
+      <div style="display:flex;gap:5px">
+        <input class="qinp" id="newPlatInput" type="text" placeholder="ชื่อ platform ใหม่..."
+          style="flex:1;font-size:11px;padding:6px 8px"
+          onkeydown="if(event.key==='Enter')addCustomPlatform()">
+        <button onclick="addCustomPlatform()"
+          style="background:var(--grad);color:#fff;border:none;padding:6px 10px;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--font);white-space:nowrap">+</button>
+      </div>
+    </div>
+    <div class="qdb-foot">
+      <button class="btn-sec" onclick="sv('db')" style="width:100%;margin-top:0;font-size:12px">จัดการ DB ทั้งหมด →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ DB VIEW ═══ -->
+<div class="app" id="vDb" style="display:none;padding:16px">
+  <div class="dbfv" style="background:var(--panel);border-radius:var(--r);border:1px solid var(--bdr);box-shadow:0 4px 20px rgba(0,0,0,.05);overflow:hidden">
+    <label class="iz" id="iz">
+      <input type="file" accept=".xlsx,.xls,.csv" onchange="importFile(event)">
+      <div class="iz-t">📂 อัปโหลด Excel/CSV นำเข้า DB</div>
+      <div class="iz-s">ลากวางหรือคลิก · Publication + PR Value · ชื่อซ้ำ = อัปเดต</div>
+    </label>
+    <div class="ires" id="ires"></div>
+    <!-- DB Sub-tabs -->
+    <div style="display:flex;gap:2px;padding:10px 14px;border-bottom:1px solid var(--bdr);background:var(--bdr2)">
+      <button class="sbtn dbtab on" id="dbtab_browse" onclick="switchDBTab('browse')" style="padding:5px 12px">📋 Browse DB</button>
+      <button class="sbtn dbtab" id="dbtab_manager" onclick="switchDBTab('manager')" style="padding:5px 12px">🔧 Data Manager</button>
+    </div>
+
+    <!-- Browse Panel -->
+    <div id="dbpanel_browse">
+    <div class="db-tbar">
+      <input class="sbox" id="dbSrch" placeholder="ค้นหา..." oninput="renderDB()" style="width:200px">
+      <select class="fsel" id="dbFPl" onchange="renderDB()">
+        <option value="">All</option><option>Website</option><option>Facebook</option>
+        <option>Instagram</option><option>YouTube</option><option>TikTok</option>
+        <option>X</option><option>LINE TODAY</option><option>LINE</option><option>TV</option>
+      </select>
+      <select class="fsel" id="dbSrc" onchange="renderDB()">
+        <option value="">All Sources</option>
+        <option value="builtin">Built-in</option><option value="custom">เพิ่มเอง</option><option value="imported">Import</option>
+      </select>
+      <span class="tcnt" id="dbCnt"></span>
+      <button class="sbtn" id="loadDBBtn" onclick="loadDBFromSheets()" style="display:none;background:rgba(5,150,105,.1);color:#065f46;border-color:#6ee7b7" title="โหลด Publication DB จาก Google Sheets">☁ โหลด DB</button>
+      <button class="sbtn" onclick="exportCustomCSV()">⬇ CSV</button>
+    </div>
+    <!-- Username mapping -->
+    <div class="umap-hdr" onclick="togUmap()">
+      <span style="font-size:12px;font-weight:600">🔗 Username → ชื่อสื่อ</span>
+      <span class="tcnt" id="umapCount"></span>
+      <span style="margin-left:auto;font-size:11px;color:var(--text3)" id="umapArrow">▼ ดู/จัดการ</span>
+    </div>
+    <div class="umap-body" id="umapBody">
+      <div style="font-size:11px;color:var(--text2);margin-bottom:9px">ระบบบันทึกอัตโนมัติทุกครั้งที่กรอก — เพิ่มเองได้ด้านล่าง</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+        <input class="sbox" id="umUsername" placeholder="@username" style="width:120px;font-family:var(--mono);font-size:11px">
+        <select class="fsel" id="umPlat"><option>TikTok</option><option>Instagram</option><option>Facebook</option><option>X</option><option>YouTube</option><option>Lemon8</option><option>Threads</option></select>
+        <input class="sbox" id="umPub" placeholder="ชื่อสื่อ เช่น Hunsa" style="width:140px">
+        <button class="btn-qadd" onclick="umAdd()" style="padding:6px 12px;white-space:nowrap">+ บันทึก</button>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <tbody id="umapRows"></tbody>
+      </table>
+      <div id="umapEmpty" style="font-size:11px;color:var(--text3);text-align:center;padding:10px">ยังไม่มี mapping</div>
+    </div>
+    <div class="db-addrow">
+      <span style="font-size:10px;font-weight:700;color:var(--text3);white-space:nowrap">+ เพิ่ม:</span>
+      <input class="sbox" id="dbPub" type="text" placeholder="Publication" style="width:170px">
+      <select class="fsel" id="dbPlat" style="max-width:130px"><option value="">Website</option><option>Facebook</option><option>Instagram</option><option>YouTube</option><option>TikTok</option><option>X</option><option>LINE TODAY</option><option>LINE</option><option>TV</option><option>Lemon8</option><option>Threads</option><option>MSN</option></select>
+      <input class="sbox" id="dbVal" type="text" placeholder="PR Value" style="width:90px">
+      <button class="btn-qadd" onclick="dbAdd()" style="padding:7px 14px;white-space:nowrap">+ เพิ่ม</button>
+    </div>
+    <div class="dbwrap">
+      <table>
+        <thead><tr><th>PUBLICATION</th><th>PLATFORM</th><th style="text-align:right">PR VALUE</th><th>แหล่ง</th><th>จัดการ</th></tr></thead>
+        <tbody id="dbBody"></tbody>
+      </table>
+    </div>
+    </div><!-- /dbpanel_browse -->
+
+    <!-- Data Manager Panel -->
+    <div id="dbpanel_manager" style="display:none;flex:1;overflow-y:auto;padding:20px">
+
+      <!-- Stats Row -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px" id="dmStats">
+        <div class="dm-stat" id="dm_total"><div class="dm-sl">Total Custom</div><div class="dm-sv" id="dmv_total">—</div></div>
+        <div class="dm-stat dm-warn" id="dm_dups"><div class="dm-sl">Duplicates</div><div class="dm-sv" id="dmv_dups">—</div></div>
+        <div class="dm-stat dm-err" id="dm_invalid"><div class="dm-sl">Invalid</div><div class="dm-sv" id="dmv_invalid">—</div></div>
+        <div class="dm-stat dm-ok" id="dm_sync"><div class="dm-sl">Last Sync</div><div class="dm-sv" id="dmv_sync" style="font-size:11px">ยังไม่เคย</div></div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px">
+        <button class="dm-btn" onclick="dmExportAll()">
+          <span>⬆</span><span>Export ทั้งหมดขึ้น Sheets</span>
+        </button>
+        <button class="dm-btn dm-btn-green" onclick="dmSyncFromSheets()">
+          <span>⬇</span><span>Sync จาก Sheets</span>
+        </button>
+        <button class="dm-btn dm-btn-blue" id="dmOpenSheetBtn" onclick="dmOpenSheet()" style="display:none">
+          <span>📊</span><span>Open Google Sheet</span>
+        </button>
+        <button class="dm-btn" onclick="dmRunAudit()">
+          <span>🔍</span><span>Audit Duplicates</span>
+        </button>
+      </div>
+
+      <!-- Sync Log -->
+      <div id="dmLog" style="display:none;background:var(--bdr2);border:1px solid var(--bdr);border-radius:var(--r2);padding:14px;margin-bottom:16px;font-size:12px;line-height:1.8;font-family:var(--mono)"></div>
+
+      <!-- Audit Results -->
+      <div id="dmAudit" style="display:none">
+        <div style="font-size:13px;font-weight:800;margin-bottom:10px">🔍 Audit Results</div>
+        <div id="dmAuditBody"></div>
+      </div>
+
+    </div><!-- /dbpanel_manager -->
+
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div id="settingsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9997;align-items:center;justify-content:center">
+  <div style="background:var(--panel);border-radius:var(--r);border:1px solid var(--bdr);padding:24px;width:420px;box-shadow:0 16px 48px rgba(0,0,0,.2)">
+    <div style="font-size:16px;font-weight:800;margin-bottom:4px">⚙ ตั้งค่า Google Sheets</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:18px">เชื่อมต่อกับ Google Sheets เพื่อบันทึกข้อมูลบน cloud</div>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div>
+        <label style="font-size:11px;font-weight:700;color:var(--text2);display:block;margin-bottom:5px">Apps Script Web App URL</label>
+        <input class="finp" type="text" id="cfgUrl" placeholder="https://script.google.com/macros/s/.../exec" style="font-size:11px;padding:8px 10px;font-family:var(--mono)">
+        <div style="font-size:10px;color:var(--text3);margin-top:3px">ได้จาก Apps Script → Deploy → Web App</div>
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:var(--text2);display:block;margin-bottom:5px">Secret Key</label>
+        <input class="finp" type="password" id="cfgSecret" placeholder="รหัสลับที่ตั้งไว้ใน Apps Script" style="font-size:12px;padding:8px 10px">
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:var(--text2);display:block;margin-bottom:5px">Google Sheet URL <span style="font-weight:400;color:var(--text3)">(สำหรับปุ่ม Open Sheet)</span></label>
+        <input class="finp" type="text" id="cfgSheetUrl" placeholder="https://docs.google.com/spreadsheets/d/..." style="font-size:11px;padding:8px 10px;font-family:var(--mono)">
+      </div>
+      <div id="cfgStatus" style="font-size:12px;display:none;padding:8px 12px;border-radius:7px"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:18px">
+      <button onclick="saveSettings()" style="flex:1;background:var(--grad);color:#fff;border:none;padding:10px;border-radius:var(--r2);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">บันทึก</button>
+      <button onclick="closeSettings()" style="background:none;border:2px solid var(--bdr);color:var(--text2);padding:10px 16px;border-radius:var(--r2);font-size:13px;cursor:pointer;font-family:var(--font)">ปิด</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<!-- Export Modal -->
+<div id="exportModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:9998;align-items:center;justify-content:center">
+  <div style="background:var(--panel);border-radius:var(--r);border:1px solid var(--bdr);padding:24px;width:360px;box-shadow:0 16px 48px rgba(0,0,0,.2)">
+    <div style="font-size:16px;font-weight:800;margin-bottom:16px">⬇ Export Excel</div>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div>
+        <label style="font-size:12px;font-weight:700;color:var(--text2);display:block;margin-bottom:5px">ช่วงวันที่</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input class="finp" type="date" id="expFrom" style="flex:1;font-size:12px;padding:7px 10px">
+          <span style="font-size:12px;color:var(--text3)">ถึง</span>
+          <input class="finp" type="date" id="expTo" style="flex:1;font-size:12px;padding:7px 10px">
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">ว่างไว้ = export ทั้งหมด</div>
+      </div>
+      <div>
+        <label style="font-size:12px;font-weight:700;color:var(--text2);display:block;margin-bottom:5px">Platform</label>
+        <select class="finp" id="expPlat" style="font-size:12px;padding:7px 10px">
+          <option value="">ทั้งหมด</option>
+          <option>Facebook</option><option>Instagram</option><option>X</option>
+          <option>YouTube</option><option>TikTok</option><option>Website</option>
+          <option>TV</option><option>LINE TODAY</option><option>Lemon8</option><option>Threads</option>
+        </select>
+      </div>
+      <div id="expCount" style="font-size:12px;color:var(--text3)"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:20px">
+      <button onclick="doExport()" style="flex:1;background:var(--grad);color:#fff;border:none;padding:11px;border-radius:var(--r2);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">Export</button>
+      <button onclick="closeExportModal()" style="background:none;border:2px solid var(--bdr);color:var(--text2);padding:11px 16px;border-radius:var(--r2);font-size:13px;cursor:pointer;font-family:var(--font)">ยกเลิก</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" defer></script>
+<script src="app.js" defer></script>
+</body>
+</html>
