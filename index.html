@@ -6,7 +6,8 @@
 <title>ClipKit — Newsclipping Data Tool</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=2.3.0">
+<link rel="stylesheet" href="phase2.css?v=2.4.6">
 </head>
 <body>
 
@@ -23,7 +24,7 @@
   </div>
   <div class="tb-right">
     <!-- Project selector -->
-    <button onclick="openSettings()" title="ตั้งค่า Google Sheets"
+    <button onclick="openSettings()" title="ตั้งค่าโปรเจกต์ ข้อมูลสำรอง และ Google Sheets"
       style="background:none;border:2px solid var(--bdr);border-radius:var(--r2);width:34px;height:34px;cursor:pointer;font-size:15px;color:var(--text2);display:flex;align-items:center;justify-content:center;transition:.15s"
       onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--bdr)'">⚙</button>
     <button class="proj-btn" id="projBtn" onclick="togProjDD()">
@@ -82,25 +83,12 @@
           <div class="flbl">PLATFORM</div>
           <select class="finp" id="fPlat" onchange="onPlatChange()">
             <option value="">— เลือก —</option>
-            <option>Facebook</option><option>Instagram</option><option>X</option>
-            <option>YouTube</option><option>TikTok</option><option>LINE TODAY</option>
-            <option>LINE</option><option>TV</option><option>Website</option>
-            <option>Lemon8</option><option>Threads</option><option>MSN</option>
-            <option value="__custom__">➕ เพิ่ม platform เอง...</option>
+            <option value="__manage__">➕ เพิ่ม / จัดการ Platform...</option>
           </select>
-          <div id="customPlatPanel" style="display:none;margin-top:6px">
-            <div style="display:flex;gap:6px;align-items:center">
-              <input class="finp" type="text" id="customPlatInput"
-                placeholder="ชื่อ platform เช่น Pantip, Blockdit"
-                style="flex:1;font-size:13px"
-                oninput="upAuto();onPubIn()">
-              <button onclick="saveCustomPlat()"
-                style="background:var(--grad);color:#fff;border:none;padding:9px 13px;border-radius:var(--r2);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);white-space:nowrap">
-                บันทึก
-              </button>
-            </div>
-            <div style="font-size:10px;color:var(--text3);margin-top:4px">กด "บันทึก" เพื่อเพิ่มเข้า dropdown</div>
-          </div>
+        </div>
+        <div class="frow" id="durationRow" style="display:none">
+          <div class="flbl">DURATION <span class="abadge">TV</span></div>
+          <input class="finp" type="text" id="fDuration" placeholder="เช่น 2.29 min" maxlength="30">
         </div>
       </div>
 
@@ -168,6 +156,15 @@
             <option>TV</option><option>Newspaper</option><option>Magazine</option><option>Video</option>
           </select>
         </div>
+        <div class="frow">
+          <div class="flbl" style="font-size:11px">WORK STATUS</div>
+          <select class="finp status-select" id="fStatus" style="font-size:12px">
+            <option value="draft">Draft — รวบรวมข้อมูล</option>
+            <option value="captured">Captured — มีภาพข่าวแล้ว</option>
+            <option value="ready">Ready — พร้อมจัดทำเอกสาร</option>
+            <option value="completed">Completed — ส่งงานแล้ว</option>
+          </select>
+        </div>
         <!-- Collapsible HEADLINE + REMARK -->
         <button class="man-tog" id="detailTog" onclick="togDetail()"
           style="margin-top:4px;border-style:dashed">
@@ -208,10 +205,18 @@
         <option>Facebook</option><option>Instagram</option><option>YouTube</option>
         <option>TikTok</option><option>X</option><option>Website</option><option>TV</option>
       </select>
+      <select class="fsel" id="filtStatus" onchange="renderTable()" aria-label="กรองสถานะงาน">
+        <option value="">All Statuses</option>
+        <option value="draft">Draft</option>
+        <option value="captured">Captured</option>
+        <option value="ready">Ready</option>
+        <option value="completed">Completed</option>
+      </select>
       <input type="date" id="filtFrom" oninput="renderTable()" title="ตั้งแต่วันที่" style="font-size:12px;padding:5px 7px;border:1.5px solid var(--bdr);border-radius:var(--r);background:var(--panel);color:var(--text1);cursor:pointer">
       <input type="date" id="filtTo" oninput="renderTable()" title="ถึงวันที่" style="font-size:12px;padding:5px 7px;border:1.5px solid var(--bdr);border-radius:var(--r);background:var(--panel);color:var(--text1);cursor:pointer">
       <button class="btn-clr" onclick="clearDateFilter()" id="btnClearDate" style="display:none;font-size:10px;padding:5px 8px" title="ล้างช่วงวันที่">✕ วันที่</button>
       <span class="tcnt" id="cntLbl">0 รายการ</span>
+      <button class="btn-batch-pdf" id="batchPdfBtn" type="button" onclick="openBatchExport()" disabled>▦ Batch PDF <span id="batchSelectedCount">0</span></button>
       <div style="position:relative;display:inline-block">
         <button class="btn-clr" onclick="togColMenu()" id="colMenuBtn" title="เลือกคอลัมน์">⊞ คอลัมน์</button>
         <div id="colMenu" style="display:none;position:absolute;top:calc(100%+4px);right:0;background:var(--panel);border:2px solid var(--bdr);border-radius:var(--r2);padding:10px 12px;z-index:999;box-shadow:0 8px 24px rgba(0,0,0,.12);white-space:nowrap;min-width:160px">
@@ -229,6 +234,7 @@
     <div class="tw">
       <table>
         <thead id="tblHead"><tr>
+          <th class="batch-select-col"><input id="batchSelectAll" type="checkbox" onchange="toggleAllBatchRows(this.checked)" aria-label="เลือกทั้งหมด"></th>
           <th id="th_date" onclick="sortBy('date')" style="cursor:pointer;user-select:none">DATE <span id="si_date" style="opacity:.5;font-size:10px">▼</span></th>
           <th id="th_pub" onclick="sortBy('pub')" style="cursor:pointer;user-select:none">PUBLICATION <span id="si_pub" style="opacity:.5;font-size:10px"></span></th>
           <th id="th_plat" onclick="sortBy('platform')" style="cursor:pointer;user-select:none">PLATFORM <span id="si_plat" style="opacity:.5;font-size:10px"></span></th>
@@ -237,7 +243,7 @@
           <th id="thLogo">LOGO</th>
           <th id="thType">TYPE</th>
           <th id="thStatus">STATUS</th>
-          <th style="width:130px"></th>
+          <th style="width:250px"></th>
         </tr></thead>
         <tbody id="tbody"></tbody>
       </table>
@@ -265,13 +271,11 @@
     </div>
     <div class="qdb-body">
       <div class="qfld"><label>Publication</label><input class="qinp" id="qPub" type="text" placeholder="ชื่อสื่อ"></div>
-      <div class="qfld"><label>Platform</label>
-        <select class="qinp" id="qPlat">
-          <option value="">Website</option><option>Facebook</option><option>Instagram</option>
-          <option>YouTube</option><option>TikTok</option><option>X</option>
-          <option>LINE TODAY</option><option>LINE</option><option>TV</option>
-          <option>Lemon8</option><option>Threads</option><option>MSN</option>
-        </select>
+      <div class="qfld"><label>Platform และตัวย่อ</label>
+        <div class="platform-select-row">
+          <select class="qinp" id="qPlat"><option>Website</option></select>
+          <button class="platform-manage-btn" type="button" onclick="openPlatformManager()" title="เพิ่มหรือแก้ไข Platform และตัวย่อ">＋</button>
+        </div>
       </div>
       <div class="qfld"><label>PR Value</label><input class="qinp" id="qVal" type="text" placeholder="360000"></div>
       <button class="btn-qadd" onclick="qAdd()">+ เพิ่มลง DB</button>
@@ -280,19 +284,9 @@
         <div id="dbRecent"><div class="rec-empty">ยังไม่มี</div></div>
       </div>
     </div>
-    <!-- Platform Manager -->
-    <div style="padding:12px 14px;border-top:1px solid var(--bdr)">
-      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">🏷 Platform</div>
-      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px" id="customPlatChips">
-        <span style="font-size:11px;color:var(--text3)">ยังไม่มี custom</span>
-      </div>
-      <div style="display:flex;gap:5px">
-        <input class="qinp" id="newPlatInput" type="text" placeholder="ชื่อ platform ใหม่..."
-          style="flex:1;font-size:11px;padding:6px 8px"
-          onkeydown="if(event.key==='Enter')addCustomPlatform()">
-        <button onclick="addCustomPlatform()"
-          style="background:var(--grad);color:#fff;border:none;padding:6px 10px;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--font);white-space:nowrap">+</button>
-      </div>
+    <div class="platform-quick-summary">
+      <div><strong>🏷 Platform Registry</strong><span id="customPlatChips">ยังไม่มี Platform ที่เพิ่มเอง</span></div>
+      <button type="button" onclick="openPlatformManager()">จัดการ</button>
     </div>
     <div class="qdb-foot">
       <button class="btn-sec" onclick="sv('db')" style="width:100%;margin-top:0;font-size:12px">จัดการ DB ทั้งหมด →</button>
@@ -354,7 +348,8 @@
     <div class="db-addrow">
       <span style="font-size:10px;font-weight:700;color:var(--text3);white-space:nowrap">+ เพิ่ม:</span>
       <input class="sbox" id="dbPub" type="text" placeholder="Publication" style="width:170px">
-      <select class="fsel" id="dbPlat" style="max-width:130px"><option value="">Website</option><option>Facebook</option><option>Instagram</option><option>YouTube</option><option>TikTok</option><option>X</option><option>LINE TODAY</option><option>LINE</option><option>TV</option><option>Lemon8</option><option>Threads</option><option>MSN</option></select>
+      <select class="fsel" id="dbPlat" style="max-width:150px"><option>Website</option></select>
+      <button class="platform-manage-btn compact" type="button" onclick="openPlatformManager()" title="จัดการ Platform">＋</button>
       <input class="sbox" id="dbVal" type="text" placeholder="PR Value" style="width:90px">
       <button class="btn-qadd" onclick="dbAdd()" style="padding:7px 14px;white-space:nowrap">+ เพิ่ม</button>
     </div>
@@ -407,12 +402,105 @@
   </div>
 </div>
 
+<!-- Phase 2 Capture Workspace -->
+<div id="captureModal" class="modal-shell" style="display:none" role="dialog" aria-modal="true" aria-labelledby="captureTitle" onpaste="onCapturePaste(event)">
+  <div class="capture-workspace">
+    <header class="capture-head">
+      <div class="capture-kicker">Phase 2 · Evidence to PDF</div>
+      <div class="capture-title-row"><div><h2 id="captureTitle"><span id="capturePub">Publication</span></h2><p id="captureMeta"></p></div><button type="button" class="capture-close" onclick="closeCapture()" aria-label="ปิด">×</button></div>
+      <div class="capture-source-bar"><div><span>SOURCE</span><strong id="captureSource"></strong></div><button type="button" onclick="openCaptureSource()">เปิดหน้าข่าว ↗</button></div>
+    </header>
+    <div class="capture-body">
+      <aside class="capture-sidebar">
+        <div class="capture-step"><b>1</b><div><strong>เปิดหน้าข่าว</strong><span>แคปหน้าจอจากเบราว์เซอร์</span></div></div>
+        <div class="capture-step"><b>2</b><div><strong>วางหรืออัปโหลด</strong><span>รองรับหลายภาพและภาพยาว</span></div></div>
+        <div class="capture-step"><b>3</b><div><strong>สร้าง PDF</strong><span>ระบบแบ่งหน้าและตั้งชื่อให้</span></div></div>
+        <label class="capture-drop" id="capturePasteZone" tabindex="0">
+          <input id="captureInput" type="file" accept="image/png,image/jpeg,image/webp" multiple onchange="onCaptureInput(event)">
+          <span class="capture-drop-icon">⌘V</span><strong>วางภาพที่นี่</strong><small>กด Ctrl/Cmd+V หรือเลือกไฟล์</small><em>เลือกภาพ</em>
+        </label>
+        <div class="capture-storage-note">ภาพถูกเก็บในเบราว์เซอร์เครื่องนี้ และรวมอยู่ใน ZIP Backup</div>
+      </aside>
+      <main class="capture-main">
+        <div class="capture-toolbar"><div><strong>Capture pages</strong><span id="captureCount">0 ภาพ</span></div><div class="capture-toolbar-options"><input id="captureCover" type="checkbox" checked hidden><select id="captureTemplate" aria-label="รูปแบบ PDF"><option value="news">NEWSCLIPPING · Letter</option><option value="standard">NEWSCLIPPING · A4</option></select><select id="captureQuality" aria-label="คุณภาพ PDF"><option value="standard">มาตรฐาน</option><option value="high">คุณภาพสูง</option></select></div></div>
+        <div id="captureEmpty" class="capture-empty"><div>▧</div><strong>ยังไม่มีภาพข่าว</strong><span>เปิดหน้าข่าวแล้ววางภาพแคป หรือเลือกไฟล์จากเครื่อง</span></div>
+        <div id="captureList" class="capture-list"></div>
+      </main>
+    </div>
+    <footer class="capture-footer"><div><span>PDF FILE</span><strong id="captureFileName"></strong><div id="captureStatus" class="capture-status" style="display:none"></div></div><div class="capture-footer-actions"><button type="button" class="capture-secondary" onclick="closeCapture()">ปิด</button><button type="button" class="capture-export" id="captureExportBtn" onclick="exportCapturePDF()" disabled>ตรวจ Preview และสร้าง PDF</button></div></footer>
+  </div>
+</div>
+
+<!-- Platform Registry Modal -->
+<div id="platformModal" class="modal-shell" style="display:none" role="dialog" aria-modal="true" aria-labelledby="platformModalTitle">
+  <div class="platform-manager-card">
+    <div class="platform-manager-head">
+      <div><div id="platformModalTitle">🏷 Platform Registry</div><p>ชื่อ Platform และตัวย่อที่ใช้สร้าง Full Key / ชื่อไฟล์</p></div>
+      <button type="button" onclick="closePlatformManager()" aria-label="ปิด">×</button>
+    </div>
+    <div class="platform-manager-grid">
+      <section class="platform-form-panel">
+        <div class="settings-section-title" id="pmFormTitle">เพิ่ม Platform ใหม่</div>
+        <label class="settings-label" for="pmName">ชื่อ Platform</label>
+        <input class="finp" id="pmName" maxlength="40" placeholder="เช่น Bluesky" oninput="updatePlatformPreview()">
+        <label class="settings-label" for="pmDbCode">ตัวย่อ DB</label>
+        <input class="finp" id="pmDbCode" maxlength="20" placeholder="เช่น BS" oninput="updatePlatformPreview()">
+        <div class="settings-help">เว้นว่างได้สำหรับ Website เพื่อไม่ต่อท้ายชื่อสื่อ</div>
+        <label class="settings-label" for="pmFileCode">ตัวย่อชื่อไฟล์</label>
+        <input class="finp" id="pmFileCode" maxlength="20" placeholder="เช่น BS" oninput="updatePlatformPreview()">
+        <div class="settings-help">เว้นว่างเพื่อใช้ชื่อ Platform เต็มในชื่อไฟล์</div>
+        <div class="platform-preview"><span id="pmDbPreview">ตัวอย่าง: Publication</span><span id="pmFilePreview">ชื่อไฟล์: 260806_Publication-BS.pdf</span></div>
+        <div class="platform-form-actions">
+          <button type="button" class="platform-save-btn" onclick="savePlatformDefinition()">บันทึก Platform</button>
+          <button type="button" class="sbtn" id="pmCancelEdit" onclick="resetPlatformForm()" style="display:none">ยกเลิกแก้ไข</button>
+        </div>
+      </section>
+      <section class="platform-list-panel">
+        <div class="platform-list-note">แก้ชื่อหรือตัวย่อได้ทันที ข้อมูลเดิมจะถูกอัปเดตตาม Registry</div>
+        <div id="platformRegistryList" class="platform-registry-list"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
 <!-- Settings Modal -->
-<div id="settingsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9997;align-items:center;justify-content:center">
-  <div style="background:var(--panel);border-radius:var(--r);border:1px solid var(--bdr);padding:24px;width:420px;box-shadow:0 16px 48px rgba(0,0,0,.2)">
-    <div style="font-size:16px;font-weight:800;margin-bottom:4px">⚙ ตั้งค่า Google Sheets</div>
-    <div style="font-size:12px;color:var(--text3);margin-bottom:18px">เชื่อมต่อกับ Google Sheets เพื่อบันทึกข้อมูลบน cloud</div>
+<div id="settingsModal" class="modal-shell" style="display:none" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+  <div class="settings-card">
+    <div id="settingsTitle" style="font-size:16px;font-weight:800;margin-bottom:4px">⚙ ตั้งค่า ClipKit</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:18px">กำหนดรูปแบบงานของโปรเจกต์ สำรองข้อมูล และเชื่อมต่อ Google Sheets</div>
     <div style="display:flex;flex-direction:column;gap:12px">
+      <section class="settings-section">
+        <div class="settings-section-title">Project output</div>
+        <label class="settings-label" for="cfgProjectName">ชื่อโปรเจกต์ / ลูกค้า</label>
+        <input class="finp" type="text" id="cfgProjectName" maxlength="60" placeholder="เช่น MMAD">
+        <label class="settings-label" for="cfgFilePattern">รูปแบบชื่อไฟล์ PDF</label>
+        <input class="finp" type="text" id="cfgFilePattern" value="{YYMMDD}_{Publication}.pdf" placeholder="{YYMMDD}_{Publication}.pdf" style="font-family:var(--mono);font-size:11px">
+        <div class="settings-help">ใช้ได้: {YYMMDD}, {Publication}, {Platform}, {Project} · ตัวอย่าง <span id="cfgFilePreview">260806_Zipeventapp.com.pdf</span></div>
+      </section>
+      <section class="settings-section phase2-settings">
+        <div class="settings-section-title">NEWSCLIPPING · Letter</div>
+        <label class="settings-label" for="cfgNewsTitle">ข้อความส่วนหัว</label>
+        <input class="finp" type="text" id="cfgNewsTitle" maxlength="40" placeholder="NEWSCLIPPING">
+        <label class="settings-label" for="cfgPrFormat">รูปแบบ PR Value</label>
+        <select class="finp" id="cfgPrFormat"><option value="number">150,000</option><option value="baht-prefix">฿150,000</option><option value="baht-suffix">150,000 บาท</option></select>
+        <div class="asset-setting-grid">
+          <div class="asset-setting-card"><label class="settings-label">โลโก้ลูกค้า · มุมขวาบน</label><div class="asset-setting-row"><div class="asset-thumb" id="cfgClientLogoPreview">ยังไม่มี</div><div class="asset-action-stack"><label class="settings-action compact">เพิ่ม / เปลี่ยน<input id="cfgClientLogoInput" type="file" accept="image/*" hidden onchange="uploadProjectAsset(event,'client')"></label><button class="settings-action compact subtle" type="button" onclick="clearProjectAsset('client')">นำออก</button></div></div></div>
+          <div class="asset-setting-card"><label class="settings-label">โลโก้บริษัท · กึ่งกลางด้านล่าง</label><div class="asset-setting-row"><div class="asset-thumb checker" id="cfgAgencyLogoPreview">ยังไม่มี</div><div class="asset-action-stack"><label class="settings-action compact">เพิ่ม / เปลี่ยน<input id="cfgAgencyLogoInput" type="file" accept="image/*" hidden onchange="uploadProjectAsset(event,'agency')"></label><button class="settings-action compact subtle" type="button" onclick="clearProjectAsset('agency')">ไม่แสดง</button></div></div><select class="finp asset-library-select" id="cfgAgencyLogoSelect" onchange="previewAgencySelection()"><option value="none">ไม่แสดง</option></select><button class="asset-default-action" type="button" onclick="setAgencyAsGlobal()">ใช้โลโก้นี้เป็นค่าเริ่มต้นบริษัท</button></div>
+        </div>
+        <label class="logo-transparency-toggle"><input id="cfgLogoTransparent" type="checkbox"> <span><strong>พื้นหลังโลโก้โปร่งใส</strong><small>ตัดเฉพาะพื้นสีขาวของโลโก้สื่อ ลูกค้า และบริษัท โดยไม่แก้ไฟล์ต้นฉบับ</small></span></label>
+        <div class="logo-import-box"><div><strong>คลังโลโก้สื่อ</strong><span id="logoLibrarySummary">ยังไม่ได้นำเข้าโฟลเดอร์</span></div><div><label class="settings-action compact">นำเข้าโฟลเดอร์<input id="logoFolderInput" type="file" webkitdirectory multiple accept="image/*" hidden onchange="importLogoFolder(event)"></label><button class="settings-action compact" type="button" onclick="openLogoManager()">จัดการคลัง</button></div></div>
+      </section>
+      <section class="settings-section">
+        <div class="settings-section-title">Data safety</div>
+        <div class="settings-actions">
+          <button class="settings-action" type="button" onclick="exportBackup()">⬇ สำรองข้อมูล</button>
+          <button class="settings-action" type="button" onclick="document.getElementById('restoreInput').click()">⬆ กู้คืนข้อมูล</button>
+          <input id="restoreInput" type="file" accept="application/json,.json,application/zip,.zip" hidden onchange="restoreBackup(event)">
+        </div>
+        <div class="settings-help">ZIP Backup รวมทุก Project, Capture และคลังโลโก้ แต่ไม่บันทึก Secret Key</div>
+      </section>
+      <section class="settings-section">
+        <div class="settings-section-title">Google Sheets</div>
       <div>
         <label style="font-size:11px;font-weight:700;color:var(--text2);display:block;margin-bottom:5px">Apps Script Web App URL</label>
         <input class="finp" type="text" id="cfgUrl" placeholder="https://script.google.com/macros/s/.../exec" style="font-size:11px;padding:8px 10px;font-family:var(--mono)">
@@ -427,6 +515,7 @@
         <input class="finp" type="text" id="cfgSheetUrl" placeholder="https://docs.google.com/spreadsheets/d/..." style="font-size:11px;padding:8px 10px;font-family:var(--mono)">
       </div>
       <div id="cfgStatus" style="font-size:12px;display:none;padding:8px 12px;border-radius:7px"></div>
+      </section>
     </div>
     <div style="display:flex;gap:8px;margin-top:18px">
       <button onclick="saveSettings()" style="flex:1;background:var(--grad);color:#fff;border:none;padding:10px;border-radius:var(--r2);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">บันทึก</button>
@@ -434,12 +523,49 @@
     </div>
   </div>
 </div>
+
+<!-- NEWSCLIPPING Preview -->
+<div id="pdfPreviewModal" class="modal-shell phase2-layer" style="display:none" role="dialog" aria-modal="true" aria-labelledby="pdfPreviewTitle">
+  <div class="pdf-preview-workspace">
+    <header class="pdf-preview-head"><div><span id="pdfPreviewEyebrow">LETTER PROOF</span><h2 id="pdfPreviewTitle">NEWSCLIPPING Preview</h2><p id="pdfPreviewMeta"></p></div><button type="button" onclick="closePdfPreview()" aria-label="ปิด">×</button></header>
+    <div class="pdf-preview-layout">
+      <aside class="pdf-preview-controls">
+        <label>Publication<input id="previewPublication" type="text" oninput="queuePdfPreviewRender()"></label>
+        <label>Date<input id="previewDate" type="date" oninput="queuePdfPreviewRender()"></label>
+        <label>Link<textarea id="previewLink" rows="3" oninput="queuePdfPreviewRender()"></textarea></label>
+        <label>PR Value<input id="previewPrValue" type="number" oninput="queuePdfPreviewRender()"></label>
+        <label id="previewDurationWrap" style="display:none">Duration<input id="previewDuration" type="text" oninput="queuePdfPreviewRender()"></label>
+        <div class="preview-logo-state" id="previewLogoState"></div>
+        <label>Template<select id="previewTemplate" onchange="queuePdfPreviewRender()"><option value="news">NEWSCLIPPING · Letter</option><option value="standard">NEWSCLIPPING · A4</option></select></label>
+        <label>คุณภาพ<select id="previewQuality" onchange="queuePdfPreviewRender()"><option value="standard">มาตรฐาน</option><option value="high">คุณภาพสูง</option></select></label>
+        <button class="preview-secondary" type="button" onclick="closePdfPreview()">ย้อนกลับแก้ไข</button>
+      </aside>
+      <main class="pdf-proof-stage"><div id="pdfPreviewBusy" class="pdf-preview-busy">กำลังจัดหน้า…</div><div id="pdfPageList" class="pdf-page-list"></div></main>
+    </div>
+    <footer class="pdf-preview-footer"><div><strong id="pdfPreviewFileName"></strong><span id="pdfPreviewStatus"></span></div><button class="capture-export" id="pdfDownloadBtn" type="button" onclick="downloadPreviewPdf()">ดาวน์โหลด PDF</button></footer>
+  </div>
+</div>
+
+<!-- Non-destructive image editor -->
+<div id="imageEditModal" class="modal-shell phase2-layer" style="display:none" role="dialog" aria-modal="true" aria-labelledby="imageEditTitle">
+  <div class="image-editor"><header><div><span>NON-DESTRUCTIVE</span><h2 id="imageEditTitle">ปรับภาพและจุดแบ่งหน้า</h2></div><button type="button" onclick="closeImageEditor()">×</button></header><div class="image-editor-body"><div class="image-editor-stage" id="imageEditorStage"><img id="imageEditorPreview" alt="ภาพสำหรับปรับแต่ง"><div id="imageBreakLayer"></div></div><aside><div class="crop-grid"><label>ซ้าย<input id="cropLeft" type="range" min="0" max="40" value="0" oninput="updateImageEditPreview()"></label><label>ขวา<input id="cropRight" type="range" min="0" max="40" value="0" oninput="updateImageEditPreview()"></label><label>บน<input id="cropTop" type="range" min="0" max="40" value="0" oninput="updateImageEditPreview()"></label><label>ล่าง<input id="cropBottom" type="range" min="0" max="40" value="0" oninput="updateImageEditPreview()"></label></div><div class="rotate-actions"><button type="button" onclick="rotateEditedImage(-90)">↶ หมุนซ้าย</button><button type="button" onclick="rotateEditedImage(90)">↷ หมุนขวา</button></div><p>ลากเส้นสีส้มบนภาพเพื่อปรับตำแหน่งแบ่งหน้า</p><button class="preview-secondary" type="button" onclick="resetEditedImage()">คืนค่าภาพ</button><button class="capture-export" type="button" onclick="saveImageEdits()">บันทึกการปรับภาพ</button></aside></div></div>
+</div>
+
+<!-- Logo library -->
+<div id="logoManagerModal" class="modal-shell phase2-layer" style="display:none" role="dialog" aria-modal="true" aria-labelledby="logoManagerTitle">
+  <div class="logo-manager"><header><div><span>MEDIA ASSETS</span><h2 id="logoManagerTitle">คลังโลโก้สื่อ</h2><p>เลือกโลโก้ ตรวจชื่อและแหล่งที่มา ก่อนผูกกับ Media DB</p></div><button type="button" onclick="closeLogoManager()">×</button></header><div class="logo-manager-tools"><input id="logoManagerSearch" type="search" placeholder="ค้นหาชื่อสื่อหรือไฟล์…" oninput="renderLogoManager()"><select id="logoManagerPlatform" onchange="renderLogoManager()"><option value="">ทุก Platform</option></select></div><div id="logoManagerGrid" class="logo-manager-grid"></div></div>
+</div>
+
+<!-- Batch export -->
+<div id="batchPdfModal" class="modal-shell phase2-layer" style="display:none" role="dialog" aria-modal="true" aria-labelledby="batchPdfTitle">
+  <div class="batch-workspace"><header><div><span>BATCH PROOF</span><h2 id="batchPdfTitle">สร้าง PDF หลายรายการ</h2><p id="batchPdfSummary"></p></div><button type="button" onclick="closeBatchExport()">×</button></header><div class="batch-options"><label>คุณภาพ<select id="batchQuality" onchange="refreshBatchExport()"><option value="standard">มาตรฐาน</option><option value="high">คุณภาพสูง</option></select></label><label class="batch-skip"><input id="batchSkipInvalid" type="checkbox" checked onchange="refreshBatchExport()"> ข้ามรายการที่ไม่พร้อม</label></div><div id="batchCardGrid" class="batch-card-grid"></div><footer><span id="batchStatus"></span><button class="capture-export" id="batchDownloadBtn" type="button" onclick="downloadBatchZip()">สร้าง ZIP</button></footer></div>
+</div>
 <div class="toast" id="toast"></div>
 
 <!-- Export Modal -->
-<div id="exportModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:9998;align-items:center;justify-content:center">
+<div id="exportModal" class="modal-shell" style="display:none;z-index:9998" role="dialog" aria-modal="true" aria-labelledby="exportTitle">
   <div style="background:var(--panel);border-radius:var(--r);border:1px solid var(--bdr);padding:24px;width:360px;box-shadow:0 16px 48px rgba(0,0,0,.2)">
-    <div style="font-size:16px;font-weight:800;margin-bottom:16px">⬇ Export Excel</div>
+    <div id="exportTitle" style="font-size:16px;font-weight:800;margin-bottom:16px">⬇ Export Excel</div>
     <div style="display:flex;flex-direction:column;gap:12px">
       <div>
         <label style="font-size:12px;font-weight:700;color:var(--text2);display:block;margin-bottom:5px">ช่วงวันที่</label>
@@ -469,6 +595,7 @@
 </div>
 
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" defer></script>
-<script src="app.js" defer></script>
+<script src="app.js?v=2.3.0" defer></script>
+<script src="phase2.js?v=2.4.6" defer></script>
 </body>
 </html>

@@ -1,0 +1,9 @@
+{
+  "name": "clipkit",
+  "private": true,
+  "version": "2.1.0",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check app.js && node --test tests/*.test.mjs"
+  }
+}
