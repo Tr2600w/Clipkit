@@ -6,17 +6,20 @@ ClipKit is a browser-based news-clipping operations tool for recording PR covera
 
 - URL detection for publication, platform, date, PR value, and logo file
 - Duplicate URL warning with an explicit confirmation before intentional duplicates
-- Per-project filename patterns, defaulting to `{YYMMDD}_{Publication}.pdf`
+- Per-project filename patterns, defaulting to `{YYMMDD}_{Publication}{PlatformSuffix}.pdf`; social/TV suffixes are shared by Letter, A4, Excel, batch ZIP, and CSV output
 - Central Platform Registry for adding, renaming, deactivating, or deleting platforms and editing both DB suffixes (`FB`, `X`, etc.) and filename abbreviations
-- Capture workspace: paste or upload multiple screenshots, reorder, crop, rotate, restore the original, and adjust page-break lines
+- Capture workspace: paste or upload multiple screenshots, reorder, crop, rotate, restore the original, and adjust paper-aware page-break lines
+- Per-capture manual scale from 25–100%, fixed-aspect left/center/right alignment, live 500 pt frame preview, apply-to-all with one-step undo, and persisted effective-DPI metadata
+- Paper-capacity pagination fills the 430 pt first-page frame and 560 pt continuation frames, ignores obsolete cuts when an image already fits, distinguishes green Auto cuts from orange Manual cuts, warns about tiny final-page tails, and offers a confirmed fit-to-one-page scale
 - `NEWSCLIPPING · Letter` output matching the supplied clipping layout, with a full first-page header and image-only continuation pages
-- Fixed Letter coordinates calibrated from the reference PDF: 521.85 pt header frame, 128 × 40/44 pt logo slots, 112.7 × 13.56 pt title plate, and 468 pt capture width
-- Media-logo library in IndexedDB with main and per-platform mappings, flexible search, user confirmation, and optional per-entry logo lock
+- Fixed Letter/A4 coordinates calibrated from the reference PDF: 521.85 pt header frame, 128 × 40/44 pt logo slots, 112.7 × 13.56 pt title plate, a 500 × 430 pt first-page capture frame, and 500 × 560 pt continuation frames
+- Media-logo library in IndexedDB with add/change/delete controls, main and per-platform defaults, latest-use ordering, export-session choices, local history, and optional per-entry logo lock
 - Client and agency logo settings per project, plus a reusable agency-logo default
 - Visible add/change/remove controls for the footer company logo and an optional non-destructive white-background transparency treatment for all logos
 - Proof-before-download flow with export-only corrections for Publication, Date, Link, PR Value, and TV Duration
-- Single PDF export and batch ZIP export with flat PDF files plus `export-summary.csv`
-- Standard and high-quality output modes
+- Vector PDF metadata for Publication, Date, Link, and PR Value, with original-resolution capture placement and an effective-DPI traffic-light warning
+- Single and batch export to a project folder where the File System Access API is available, with normal-download/ZIP fallback, duplicate-name policies, optional PDF/Excel/Backup subfolders, retry for failed batch items, and `export-summary.csv`
+- Standard 150 DPI and high-quality 300 DPI output modes; PNG is preferred for screenshots and high-quality output, while photographic JPEG sources use quality 92% in standard mode
 - Work statuses: Draft, Captured, Ready, and Completed
 - Excel export with `News Data`, `MailMerge`, and `Summary` sheets
 - Versioned browser storage with migration and a pre-migration safety snapshot
@@ -40,6 +43,7 @@ Open the gear menu to configure the client/project name and PDF filename pattern
 
 - `{YYMMDD}`
 - `{Publication}`
+- `{PlatformSuffix}` (for example ` - FB`, ` - IG`, or ` - TV - 2.29 min`; Website is blank)
 - `{Platform}`
 - `{Project}`
 

@@ -7,7 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css?v=2.3.0">
-<link rel="stylesheet" href="phase2.css?v=2.4.6">
+<link rel="stylesheet" href="phase2.css?v=2.7.0">
 </head>
 <body>
 
@@ -113,6 +113,7 @@
             <span style="font-size:10px;color:var(--text3);font-weight:400;margin-left:4px">คลิกเพื่อแก้</span>
           </div>
           <div class="flogo empty" id="logoBox" onclick="togLogoEdit()" style="cursor:pointer" title="คลิกเพื่อแก้ชื่อโลโก้">—</div>
+          <button class="media-logo-manage" type="button" onclick="openLogoManager()">เพิ่ม / เปลี่ยนโลโก้สื่อ</button>
           <div id="logoEditWrap" style="display:none;margin-top:6px">
             <div class="logo-sug-wrap">
               <input class="finp" type="text" id="logoManual" placeholder="ค้นหาชื่อโลโก้ เช่น Thairath"
@@ -279,6 +280,7 @@
       </div>
       <div class="qfld"><label>PR Value</label><input class="qinp" id="qVal" type="text" placeholder="360000"></div>
       <button class="btn-qadd" onclick="qAdd()">+ เพิ่มลง DB</button>
+      <button class="media-logo-manage" type="button" onclick="openLogoManager()">เพิ่มสื่อพร้อมโลโก้</button>
       <div style="padding-top:12px;border-top:1px solid var(--bdr);margin-top:4px">
         <div style="font-size:9px;font-weight:700;color:var(--text3);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px">เพิ่มล่าสุด</div>
         <div id="dbRecent"><div class="rec-empty">ยังไม่มี</div></div>
@@ -325,6 +327,7 @@
       <span class="tcnt" id="dbCnt"></span>
       <button class="sbtn" id="loadDBBtn" onclick="loadDBFromSheets()" style="display:none;background:rgba(5,150,105,.1);color:#065f46;border-color:#6ee7b7" title="โหลด Publication DB จาก Google Sheets">☁ โหลด DB</button>
       <button class="sbtn" onclick="exportCustomCSV()">⬇ CSV</button>
+      <button class="sbtn" onclick="openLogoManager()">จัดการโลโก้สื่อ</button>
     </div>
     <!-- Username mapping -->
     <div class="umap-hdr" onclick="togUmap()">
@@ -474,8 +477,17 @@
         <label class="settings-label" for="cfgProjectName">ชื่อโปรเจกต์ / ลูกค้า</label>
         <input class="finp" type="text" id="cfgProjectName" maxlength="60" placeholder="เช่น MMAD">
         <label class="settings-label" for="cfgFilePattern">รูปแบบชื่อไฟล์ PDF</label>
-        <input class="finp" type="text" id="cfgFilePattern" value="{YYMMDD}_{Publication}.pdf" placeholder="{YYMMDD}_{Publication}.pdf" style="font-family:var(--mono);font-size:11px">
-        <div class="settings-help">ใช้ได้: {YYMMDD}, {Publication}, {Platform}, {Project} · ตัวอย่าง <span id="cfgFilePreview">260806_Zipeventapp.com.pdf</span></div>
+        <input class="finp" type="text" id="cfgFilePattern" value="{YYMMDD}_{Publication}{PlatformSuffix}.pdf" placeholder="{YYMMDD}_{Publication}{PlatformSuffix}.pdf" style="font-family:var(--mono);font-size:11px">
+        <div class="settings-help">ใช้ได้: {YYMMDD}, {Publication}, {PlatformSuffix}, {Platform}, {Project} · ตัวอย่าง <span id="cfgFilePreview">260806_Zipeventapp.com.pdf</span></div>
+        <div class="output-folder-card">
+          <div><strong id="cfgOutputFolderTitle">โฟลเดอร์ปลายทางของโปรเจกต์</strong><span id="cfgOutputFolderStatus">ยังไม่ได้เลือก · ใช้ Download ปกติ</span></div>
+          <div><button class="settings-action compact" type="button" onclick="p2ChooseProjectFolder()">เลือกโฟลเดอร์</button><button class="settings-action compact subtle" type="button" onclick="p2ClearProjectFolder()">ยกเลิก</button></div>
+        </div>
+        <label class="settings-check"><input id="cfgSeparatePdf" type="checkbox"> แยก PDF ไว้ในโฟลเดอร์ PDF</label>
+        <label class="settings-check"><input id="cfgSeparateExcel" type="checkbox"> แยก Excel/CSV ไว้ในโฟลเดอร์ Excel</label>
+        <label class="settings-check"><input id="cfgSeparateBackup" type="checkbox"> แยก Backup ไว้ในโฟลเดอร์ Backup</label>
+        <label class="settings-label" for="cfgDuplicateMode">เมื่อชื่อไฟล์ซ้ำ</label>
+        <select class="finp" id="cfgDuplicateMode"><option value="suffix">เติม _02, _03 อัตโนมัติ</option><option value="ask">ถามก่อนเขียนทับ</option><option value="overwrite">เขียนทับ</option></select>
       </section>
       <section class="settings-section phase2-settings">
         <div class="settings-section-title">NEWSCLIPPING · Letter</div>
@@ -536,29 +548,30 @@
         <label>PR Value<input id="previewPrValue" type="number" oninput="queuePdfPreviewRender()"></label>
         <label id="previewDurationWrap" style="display:none">Duration<input id="previewDuration" type="text" oninput="queuePdfPreviewRender()"></label>
         <div class="preview-logo-state" id="previewLogoState"></div>
+        <div class="preview-quality-state" id="previewQualityState"></div>
         <label>Template<select id="previewTemplate" onchange="queuePdfPreviewRender()"><option value="news">NEWSCLIPPING · Letter</option><option value="standard">NEWSCLIPPING · A4</option></select></label>
         <label>คุณภาพ<select id="previewQuality" onchange="queuePdfPreviewRender()"><option value="standard">มาตรฐาน</option><option value="high">คุณภาพสูง</option></select></label>
-        <button class="preview-secondary" type="button" onclick="closePdfPreview()">ย้อนกลับแก้ไข</button>
+        <button class="preview-secondary" type="button" onclick="closePdfPreview()">กลับไปปรับภาพ</button>
       </aside>
       <main class="pdf-proof-stage"><div id="pdfPreviewBusy" class="pdf-preview-busy">กำลังจัดหน้า…</div><div id="pdfPageList" class="pdf-page-list"></div></main>
     </div>
-    <footer class="pdf-preview-footer"><div><strong id="pdfPreviewFileName"></strong><span id="pdfPreviewStatus"></span></div><button class="capture-export" id="pdfDownloadBtn" type="button" onclick="downloadPreviewPdf()">ดาวน์โหลด PDF</button></footer>
+    <footer class="pdf-preview-footer"><div><strong id="pdfPreviewFileName"></strong><span id="pdfPreviewStatus"></span></div><div class="preview-save-actions"><button class="preview-secondary" type="button" onclick="p2ChooseExportFolderOnce()">เลือกโฟลเดอร์ครั้งนี้</button><button class="capture-export" id="pdfDownloadBtn" type="button" onclick="downloadPreviewPdf()">บันทึก PDF</button></div></footer>
   </div>
 </div>
 
 <!-- Non-destructive image editor -->
 <div id="imageEditModal" class="modal-shell phase2-layer" style="display:none" role="dialog" aria-modal="true" aria-labelledby="imageEditTitle">
-  <div class="image-editor"><header><div><span>NON-DESTRUCTIVE</span><h2 id="imageEditTitle">ปรับภาพและจุดแบ่งหน้า</h2></div><button type="button" onclick="closeImageEditor()">×</button></header><div class="image-editor-body"><div class="image-editor-stage" id="imageEditorStage"><img id="imageEditorPreview" alt="ภาพสำหรับปรับแต่ง"><div id="imageBreakLayer"></div></div><aside><div class="crop-grid"><label>ซ้าย<input id="cropLeft" type="range" min="0" max="40" value="0" oninput="updateImageEditPreview()"></label><label>ขวา<input id="cropRight" type="range" min="0" max="40" value="0" oninput="updateImageEditPreview()"></label><label>บน<input id="cropTop" type="range" min="0" max="40" value="0" oninput="updateImageEditPreview()"></label><label>ล่าง<input id="cropBottom" type="range" min="0" max="40" value="0" oninput="updateImageEditPreview()"></label></div><div class="rotate-actions"><button type="button" onclick="rotateEditedImage(-90)">↶ หมุนซ้าย</button><button type="button" onclick="rotateEditedImage(90)">↷ หมุนขวา</button></div><p>ลากเส้นสีส้มบนภาพเพื่อปรับตำแหน่งแบ่งหน้า</p><button class="preview-secondary" type="button" onclick="resetEditedImage()">คืนค่าภาพ</button><button class="capture-export" type="button" onclick="saveImageEdits()">บันทึกการปรับภาพ</button></aside></div></div>
+  <div class="image-editor"><header><div><span>NON-DESTRUCTIVE</span><h2 id="imageEditTitle">ปรับภาพและจุดแบ่งหน้า</h2></div><button type="button" onclick="closeImageEditor()">×</button></header><div class="image-editor-body"><div class="image-editor-stage" id="imageEditorStage"><div class="image-frame-shell"><div class="image-frame-ruler"><span>0</span><strong>กรอบ 500 pt</strong><span>500</span></div><div class="image-frame-content" id="imageFrameContent"><div class="image-scaled-preview" id="imageScaledPreview"><img id="imageEditorPreview" alt="ภาพสำหรับปรับแต่ง"><div id="imageBreakLayer"></div></div></div></div></div><aside><section class="manual-scale-panel"><div class="manual-scale-head"><strong>ขนาดภาพ</strong><output id="imageScaleSummary">100% · 500 pt</output></div><input id="imageScaleRange" type="range" min="25" max="100" step="1" value="100" oninput="setEditedScale(this.value)"><div class="manual-scale-input"><input id="imageScalePercent" type="number" min="25" max="100" step="1" value="100" oninput="setEditedScale(this.value)"><span>%</span></div><div class="scale-presets"><button type="button" onclick="setEditedScale(50)">50%</button><button type="button" onclick="setEditedScale(75)">75%</button><button type="button" onclick="setEditedScale(100)">100%</button></div><div class="image-align-control"><button id="imageAlignLeft" type="button" onclick="setEditedAlignment('left')">ชิดซ้าย</button><button id="imageAlignCenter" type="button" onclick="setEditedAlignment('center')">กึ่งกลาง</button><button id="imageAlignRight" type="button" onclick="setEditedAlignment('right')">ชิดขวา</button></div><div class="scale-readability" id="imageScaleWarning"></div><div class="page-tail-warning" id="pageTailWarning" hidden></div><button class="fit-one-page" id="fitOnePageBtn" type="button" onclick="fitEditedImageToOnePage()" hidden>ย่อให้พอดีหน้าเดียว</button><button class="undo-page-cuts" id="undoPageCutsBtn" type="button" onclick="undoPageCutReset()" hidden>↶ ย้อนกลับเส้นแบ่งหน้าเดิม</button><button class="apply-scale-all" type="button" onclick="applyScaleToAllCaptures()">ใช้ขนาดนี้กับทุก Capture</button><button class="undo-scale-all" id="undoScaleAllBtn" type="button" onclick="undoApplyScaleAll()" hidden>↶ ย้อนกลับการใช้กับทุกภาพ</button></section><div class="crop-grid"><label>ซ้าย<input id="cropLeft" type="range" min="0" max="40" value="0" oninput="updateImageGeometry()"></label><label>ขวา<input id="cropRight" type="range" min="0" max="40" value="0" oninput="updateImageGeometry()"></label><label>บน<input id="cropTop" type="range" min="0" max="40" value="0" oninput="updateImageGeometry()"></label><label>ล่าง<input id="cropBottom" type="range" min="0" max="40" value="0" oninput="updateImageGeometry()"></label></div><div class="rotate-actions"><button type="button" onclick="rotateEditedImage(-90)">↶ หมุนซ้าย</button><button type="button" onclick="rotateEditedImage(90)">↷ หมุนขวา</button></div><p>แถบสีคือพื้นที่หน้ากระดาษจริง · เส้นเขียวเป็น Auto cut · ลากแล้วจะเปลี่ยนเป็น Manual cut สีส้ม</p><button class="preview-secondary" type="button" onclick="resetEditedImage()">คืนค่าภาพ</button><button class="capture-export" type="button" onclick="saveImageEdits()">บันทึกการปรับภาพ</button></aside></div></div>
 </div>
 
 <!-- Logo library -->
 <div id="logoManagerModal" class="modal-shell phase2-layer" style="display:none" role="dialog" aria-modal="true" aria-labelledby="logoManagerTitle">
-  <div class="logo-manager"><header><div><span>MEDIA ASSETS</span><h2 id="logoManagerTitle">คลังโลโก้สื่อ</h2><p>เลือกโลโก้ ตรวจชื่อและแหล่งที่มา ก่อนผูกกับ Media DB</p></div><button type="button" onclick="closeLogoManager()">×</button></header><div class="logo-manager-tools"><input id="logoManagerSearch" type="search" placeholder="ค้นหาชื่อสื่อหรือไฟล์…" oninput="renderLogoManager()"><select id="logoManagerPlatform" onchange="renderLogoManager()"><option value="">ทุก Platform</option></select></div><div id="logoManagerGrid" class="logo-manager-grid"></div></div>
+  <div class="logo-manager"><header><div><span>MEDIA ASSETS</span><h2 id="logoManagerTitle">คลังโลโก้สื่อ</h2><p>เพิ่มสื่อ เปลี่ยนโลโก้ และกำหนดค่า Default จากหน้าต่างเดียว</p></div><button type="button" onclick="closeLogoManager()">×</button></header><div class="logo-manager-body"><aside class="logo-manager-create"><strong>เพิ่มสื่อ / โลโก้</strong><label>Publication<input id="logoFormPublication" type="text" placeholder="ชื่อสื่อ"></label><label>Platform<select id="logoFormPlatform"></select></label><label>PR Value<input id="logoFormPrValue" type="number" value="150000" min="1"></label><label>ไฟล์โลโก้<input id="logoFormFile" type="file" accept=".png,.jpg,.jpeg,.webp,.svg,image/png,image/jpeg,image/webp,image/svg+xml"></label><label>บันทึกเป็น<select id="logoFormScope"><option value="platform">Default ของสื่อ + Platform</option><option value="main">Default หลักของสื่อ</option></select></label><button class="capture-export" type="button" onclick="p2CreateMediaWithLogo()">บันทึกสื่อและโลโก้</button><small>บันทึกสื่อได้โดยยังไม่เลือกไฟล์ แต่จะ Export PDF ไม่ได้จนกว่าจะมีโลโก้</small></aside><section class="logo-manager-library"><div class="logo-manager-tools"><input id="logoManagerSearch" type="search" placeholder="ค้นหาชื่อสื่อหรือไฟล์…" oninput="renderLogoManager()"><select id="logoManagerPlatform" onchange="renderLogoManager()"><option value="">ทุก Platform</option></select><label class="settings-action compact">เพิ่มโลโก้<input id="logoSingleInput" type="file" accept=".png,.jpg,.jpeg,.webp,.svg,image/png,image/jpeg,image/webp,image/svg+xml" hidden onchange="p2UploadLogoForContext(event)"></label></div><div id="logoManagerGrid" class="logo-manager-grid"></div></section></div></div>
 </div>
 
 <!-- Batch export -->
 <div id="batchPdfModal" class="modal-shell phase2-layer" style="display:none" role="dialog" aria-modal="true" aria-labelledby="batchPdfTitle">
-  <div class="batch-workspace"><header><div><span>BATCH PROOF</span><h2 id="batchPdfTitle">สร้าง PDF หลายรายการ</h2><p id="batchPdfSummary"></p></div><button type="button" onclick="closeBatchExport()">×</button></header><div class="batch-options"><label>คุณภาพ<select id="batchQuality" onchange="refreshBatchExport()"><option value="standard">มาตรฐาน</option><option value="high">คุณภาพสูง</option></select></label><label class="batch-skip"><input id="batchSkipInvalid" type="checkbox" checked onchange="refreshBatchExport()"> ข้ามรายการที่ไม่พร้อม</label></div><div id="batchCardGrid" class="batch-card-grid"></div><footer><span id="batchStatus"></span><button class="capture-export" id="batchDownloadBtn" type="button" onclick="downloadBatchZip()">สร้าง ZIP</button></footer></div>
+  <div class="batch-workspace"><header><div><span>BATCH PROOF</span><h2 id="batchPdfTitle">สร้าง PDF หลายรายการ</h2><p id="batchPdfSummary"></p></div><button type="button" onclick="closeBatchExport()">×</button></header><div class="batch-options"><label>คุณภาพ<select id="batchQuality" onchange="refreshBatchExport()"><option value="standard">มาตรฐาน · 150 DPI</option><option value="high">คุณภาพสูง · 300 DPI</option></select></label><label class="batch-skip"><input id="batchSkipInvalid" type="checkbox" checked onchange="refreshBatchExport()"> ข้ามรายการที่ไม่พร้อม</label><button class="preview-secondary" type="button" onclick="p2ChooseExportFolderOnce()">เลือกโฟลเดอร์ครั้งนี้</button></div><div id="batchCardGrid" class="batch-card-grid"></div><footer><span id="batchStatus"></span><div class="batch-footer-actions"><button class="preview-secondary" id="batchRetryBtn" type="button" onclick="retryFailedBatch()" hidden>ลองใหม่เฉพาะที่ล้มเหลว</button><button class="capture-export" id="batchDownloadBtn" type="button" onclick="downloadBatchZip()">Export Batch</button></div></footer></div>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -595,7 +608,7 @@
 </div>
 
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" defer></script>
-<script src="app.js?v=2.3.0" defer></script>
-<script src="phase2.js?v=2.4.6" defer></script>
+<script src="app.js?v=2.5.0" defer></script>
+<script src="phase2.js?v=2.7.0" defer></script>
 </body>
 </html>

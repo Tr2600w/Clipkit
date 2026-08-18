@@ -21,8 +21,9 @@ const safeSession = (()=>{
   catch{return {_data:{},getItem(k){return this._data[k]||null;},setItem(k,v){this._data[k]=String(v);},removeItem(k){delete this._data[k];}};}
 })();
 
-const APP_SCHEMA_VERSION = 4;
-const DEFAULT_FILE_PATTERN = '{YYMMDD}_{Publication}.pdf';
+const APP_SCHEMA_VERSION = 5;
+const LEGACY_DEFAULT_FILE_PATTERN = '{YYMMDD}_{Publication}.pdf';
+const DEFAULT_FILE_PATTERN = '{YYMMDD}_{Publication}{PlatformSuffix}.pdf';
 const WORK_STATUSES = ['draft','captured','ready','completed'];
 
 function readJSON(key, fallback){
@@ -195,7 +196,7 @@ function getAllProjects(){
     ...p,
     name:p.name||'Untitled',
     clientName:p.clientName||p.name||'Untitled',
-    filePattern:p.filePattern||DEFAULT_FILE_PATTERN
+    filePattern:!p.filePattern||p.filePattern===LEGACY_DEFAULT_FILE_PATTERN?DEFAULT_FILE_PATTERN:p.filePattern
   }));
   // Always ensure default exists
   if(!list.find(p=>p.id===DEFAULT_PROJ)){
@@ -362,7 +363,7 @@ function migrateStorage(){
   projects.forEach(project=>{
     const migrated=getProjEntries(project.id).map(entry=>({
       ...normalizeEntry(entry),
-      fileName:buildOutputFileName(entry.date,entry.pub,entry.platform,project)
+      fileName:buildOutputFileName(entry.date,entry.pub,entry.platform,project,entry.duration)
     }));
     saveProjEntries(project.id,migrated);
   });
@@ -628,7 +629,7 @@ function migratePlatformReferences(oldName,newName){
   const matches=value=>String(value||'').toLowerCase()===String(oldName).toLowerCase()||normPlatform(value)===newName;
   const remap=list=>list.map(row=>matches(row.platform)?{...row,platform:newName,key:makeDbKey(row.pub,newName)}:row);
   saveCustom(remap(getCustom()));saveImported(remap(getImported()));
-  getAllProjects().forEach(project=>saveProjEntries(project.id,getProjEntries(project.id).map(row=>matches(row.platform)?{...row,platform:newName,fullKey:makeDbKey(row.pub,newName),fileName:buildOutputFileName(row.date,row.pub,newName,project),updatedAt:new Date().toISOString()}:row)));
+  getAllProjects().forEach(project=>saveProjEntries(project.id,getProjEntries(project.id).map(row=>matches(row.platform)?{...row,platform:newName,fullKey:makeDbKey(row.pub,newName),fileName:buildOutputFileName(row.date,row.pub,newName,project,row.duration),updatedAt:new Date().toISOString()}:row)));
   const rebuiltMap={};getUsernameMappings().forEach(m=>{const platform=matches(m.platform)?newName:m.platform;rebuiltMap[platform.toLowerCase()+':'+m.username.toLowerCase()]={...m,platform};});saveUsernameMap(rebuiltMap);
   entries.length=0;getProjEntries(_activeProj).forEach(e=>entries.push(e));
 }
@@ -785,7 +786,7 @@ function saveSettings(){
   const projects=getAllProjects();
   const idx=projects.findIndex(p=>p.id===_activeProj);
   if(idx>=0){projects[idx]={...projects[idx],clientName:projectName,filePattern};saveProjectList(projects);}
-  entries=entries.map(e=>({...e,fileName:buildOutputFileName(e.date,e.pub,e.platform,projects[idx]),updatedAt:new Date().toISOString()}));
+  entries=entries.map(e=>({...e,fileName:buildOutputFileName(e.date,e.pub,e.platform,projects[idx],e.duration),updatedAt:new Date().toISOString()}));
   saveProjEntries(_activeProj,entries);
   if(url){safeLS.setItem('ck_gs_url',url);safeSession.setItem('ck_gs_secret',secret);}
   else{safeLS.removeItem('ck_gs_url');safeSession.removeItem('ck_gs_secret');}
@@ -1628,11 +1629,17 @@ function lookupPR(pub,plat){
 function filenamePart(value){
   return String(value||'')
     .replace(/[\\/:*?"<>|]/g,'-')
-    .replace(/\s+/g,'')
+    .replace(/\s+/g,' ')
     .replace(/-+/g,'-')
     .replace(/^[.\-_]+|[.\-_]+$/g,'')||'Untitled';
 }
-function buildOutputFileName(date,pub,plat,project){
+function platformFileSuffix(plat,duration=''){
+  const normalized=normPlatform(plat||'');
+  if(!normalized||normalized==='Website'||normalized==='Web')return '';
+  const code=getPlatformCode(normalized,'file')||normalized;
+  return ' - '+code+(normalized==='TV'&&String(duration||'').trim()?' - '+String(duration).trim():'');
+}
+function buildOutputFileName(date,pub,plat,project,duration=''){
   if(!date||!pub)return '';
   const compact=String(date).replace(/-/g,'');
   const yymmdd=compact.length===8?compact.slice(2):compact;
@@ -1641,13 +1648,14 @@ function buildOutputFileName(date,pub,plat,project){
   let output=pattern
     .replaceAll('{YYMMDD}',yymmdd)
     .replaceAll('{Publication}',filenamePart(pub))
-    .replaceAll('{Platform}',filenamePart(getPlatformCode(plat,'file')||plat||'WEB'))
+    .replaceAll('{PlatformSuffix}',platformFileSuffix(plat,duration))
+    .replaceAll('{Platform}',filenamePart(getPlatformCode(plat,'file')||plat||''))
     .replaceAll('{Project}',filenamePart((proj&&proj.clientName)||(proj&&proj.name)||'ClipKit'));
-  output=output.replace(/[\\/:*?"<>|]/g,'-').replace(/\s+/g,'_');
+  output=output.replace(/[\\/:*?"<>|]/g,'-').replace(/\s+/g,' ').trim();
   if(!/\.pdf$/i.test(output))output+='.pdf';
   return output;
 }
-function buildFN(date,pub,plat){return buildOutputFileName(date,pub,plat);}
+function buildFN(date,pub,plat,duration=''){return buildOutputFileName(date,pub,plat,undefined,duration);}
 function fmtPR(v){return v!=null?'฿'+Number(v).toLocaleString('th-TH'):'—';}
 
 // ═══ PHASE 2: CAPTURE LIBRARY + PDF ═══
@@ -1709,7 +1717,7 @@ async function openCapture(entryId){
   document.getElementById('capturePub').textContent=entry.pub;
   document.getElementById('captureMeta').textContent=[entry.date,entry.platform,fmtPR(entry.prValue)].filter(Boolean).join(' · ');
   const source=document.getElementById('captureSource');source.textContent=entry.url||'รายการนี้ยังไม่มี URL';source.title=entry.url||'';
-  document.getElementById('captureFileName').textContent=buildOutputFileName(entry.date,entry.pub,entry.platform,getActiveProject());
+  document.getElementById('captureFileName').textContent=buildOutputFileName(entry.date,entry.pub,entry.platform,getActiveProject(),entry.duration);
   setCaptureStatus('กำลังเปิดคลังภาพ…','');
   try{const record=await getCaptureRecord(_activeProj,entry.id);_captureImages=Array.isArray(record.images)?record.images:[];renderCaptureImages();setCaptureStatus('','');}
   catch(err){_captureImages=[];renderCaptureImages();setCaptureStatus(err.message,'err');}
@@ -1793,7 +1801,7 @@ async function exportCapturePDF(){
   const entry=entries.find(e=>e.id===_captureEntryId);if(!entry||!_captureImages.length)return;
   const button=document.getElementById('captureExportBtn');button.disabled=true;button.textContent='กำลังสร้าง PDF…';setCaptureStatus('กำลังจัดหน้า PDF','busy');
   try{
-    const fileName=buildOutputFileName(entry.date,entry.pub,entry.platform,getActiveProject());
+    const fileName=buildOutputFileName(entry.date,entry.pub,entry.platform,getActiveProject(),entry.duration);
     const pageW=595.28,pageH=841.89,margin=28,pages=[];
     if(document.getElementById('captureCover').checked)pages.push({dataUrl:captureCoverData(entry,_captureImages.length,fileName),width:1240,height:1754});
     for(let n=0;n<_captureImages.length;n++){
@@ -2363,7 +2371,7 @@ function styleSheetHeader(ws,headers){
   ws['!rows']=ws['!rows']||[];ws['!rows'][0]={hpt:25};
   ws['!freeze']={xSplit:0,ySplit:1,topLeftCell:'A2',activePane:'bottomLeft',state:'frozen'};
 }
-function exportExcelData(data){
+async function exportExcelData(data){
   if(!data||!data.length){toast('ไม่มีข้อมูล','err');return;}
   if(!ensureXLSX())return;
   const entries=data;
@@ -2378,7 +2386,7 @@ function exportExcelData(data){
   const rows=sorted.map(e=>({
     'Project':projectName,'วันที่':excelDate(e.date),'URL':e.url||'','ชื่อสื่อ':e.pub||'','Platform':e.platform||'',
     'Logo_File':e.logoFile||'','Full_Key':e.fullKey||'','PR_Value':e.prValue||0,
-    'ประเภท':e.type||'','Headline':e.headline||'','PDF_FileName':buildOutputFileName(e.date,e.pub,e.platform,project),'หมายเหตุ':e.remark||'',
+    'ประเภท':e.type||'','Headline':e.headline||'','PDF_FileName':buildOutputFileName(e.date,e.pub,e.platform,project,e.duration),'หมายเหตุ':e.remark||'',
     'Work_Status':statusMeta(e.status).label,
     'Data_Status':!e.prValue?'ไม่พบ DB':(!e.date||!e.pub||!e.platform)?'กรอกไม่ครบ':'พร้อม',
     'Created_At':e.createdAt||'','Updated_At':e.updatedAt||''
@@ -2399,7 +2407,7 @@ function exportExcelData(data){
   const mmRows=sorted.map(e=>({
     'Project':projectName,'Publication':e.pub||'','PR_Value':e.prValue||0,'Date':excelDate(e.date),'Link':e.url||'',
     'Publication_Logo':e.logoFile||'','Platform':e.platform||'','Type':e.type||'','Headline':e.headline||'',
-    'PDF_FileName':buildOutputFileName(e.date,e.pub,e.platform,project),'Remark':e.remark||'','Work_Status':statusMeta(e.status).label
+    'PDF_FileName':buildOutputFileName(e.date,e.pub,e.platform,project,e.duration),'Remark':e.remark||'','Work_Status':statusMeta(e.status).label
   }));
   const wsMM=XLSX.utils.json_to_sheet(mmRows,{header:mmHdrs});
   wsMM['!cols']=[{wch:18},{wch:28},{wch:14},{wch:12},{wch:44},{wch:26},{wch:14},{wch:12},{wch:36},{wch:34},{wch:22},{wch:14}];
@@ -2429,7 +2437,11 @@ function exportExcelData(data){
 
   const d=new Date();
   const _pname=filenamePart(projectName).slice(0,30);
-  XLSX.writeFile(wb,String(d.getFullYear()).slice(2)+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'_'+_pname+'.xlsx',{cellStyles:true});
+  const workbookName=String(d.getFullYear()).slice(2)+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'_'+_pname+'.xlsx';
+  if(typeof p2SaveBlob==='function'){
+    const bytes=XLSX.write(wb,{bookType:'xlsx',type:'array',cellStyles:true});
+    await p2SaveBlob(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),workbookName,'excel');
+  }else XLSX.writeFile(wb,workbookName,{cellStyles:true});
   toast('✓ Export สำเร็จ (3 sheets: News Data, MailMerge, Summary)','ok');
 }
 
@@ -2560,12 +2572,12 @@ function overrideB(pub,plat,val){
   document.getElementById('dbPub').value=pub;document.getElementById('dbPlat').value=plat;document.getElementById('dbVal').value=val;
   toast('โหลดมาแล้ว — แก้ค่าแล้วกด "+ เพิ่ม"','info');
 }
-function exportCustomCSV(){
+async function exportCustomCSV(){
   const all=[...getCustom(),...getImported()];
   if(!all.length){toast('ไม่มี custom entry','err');return;}
   const rows=all.map(d=>[d.pub,d.platform,d.value,d.key].map(v=>'"'+String(v).replace(/"/g,'""')+'"'));
   const csv=['"Publication","Platform","PR Value","Full Key"',...rows.map(r=>r.join(','))].join('\n');
-  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'}));a.download='CustomDB.csv';a.click();
+  const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});if(typeof p2SaveBlob==='function')await p2SaveBlob(blob,'CustomDB.csv','excel');else downloadLocalBlob(blob,'CustomDB.csv');
 }
 
 // ═══ IMPORT ═══
