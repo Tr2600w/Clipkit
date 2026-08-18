@@ -53,6 +53,7 @@ function loadPhase2(extra=''){
   const app=fs.readFileSync(new URL('../app.js',import.meta.url),'utf8');
   const phase2=fs.readFileSync(new URL('../phase2.js',import.meta.url),'utf8');
   vm.runInContext(app+'\n'+phase2+'\n'+extra,context,{filename:'phase2.js'});
+  return context;
 }
 
 test('Phase 1 core safety and naming rules',()=>{
@@ -82,10 +83,10 @@ test('legacy entries migrate without being discarded',()=>{
   const legacy=JSON.stringify([{id:7,date:'2026-08-06',pub:'Zipeventapp.com',platform:'Website',prValue:210000}]);
   loadApp(`
     migrateStorage();
-    testAssert.equal(safeLS.getItem('ck_schema_version'),'4');
+    testAssert.equal(safeLS.getItem('ck_schema_version'),'5');
     testAssert.equal(safeLS.getItem('ck_entries'),null);
     testAssert.equal(!!safeLS.getItem('ck_backup_pre_v2'),true);
-    testAssert.equal(!!safeLS.getItem('ck_backup_pre_v4'),true);
+    testAssert.equal(!!safeLS.getItem('ck_backup_pre_v5'),true);
     const migrated=JSON.parse(safeLS.getItem('ck_proj_default'));
     testAssert.equal(migrated.length,1);
     testAssert.equal(migrated[0].fileName,'260806_Zipeventapp.com.pdf');
@@ -102,7 +103,16 @@ test('platform registry controls DB suffixes and file-name abbreviations',()=>{
     testAssert.equal(makeDbKey('Example Media','Bluesky'),'Example Media - BS');
     testAssert.equal(buildOutputFileName('2026-08-06','Example Media','Bluesky',{
       name:'MMAD',filePattern:'{YYMMDD}_{Publication}-{Platform}.pdf'
-    }),'260806_ExampleMedia-BSKY.pdf');
+    }),'260806_Example Media-BSKY.pdf');
+    testAssert.equal(buildOutputFileName('2026-08-06','Example Media','Facebook',{
+      name:'MMAD',filePattern:'{YYMMDD}_{Publication}{PlatformSuffix}.pdf'
+    }),'260806_Example Media - FB.pdf');
+    testAssert.equal(buildOutputFileName('2026-08-06','Example.com','Website',{
+      name:'MMAD',filePattern:'{YYMMDD}_{Publication}{PlatformSuffix}.pdf'
+    }),'260806_Example.com.pdf');
+    testAssert.equal(buildOutputFileName('2026-08-06','Channel 3','TV',{
+      name:'MMAD',filePattern:'{YYMMDD}_{Publication}{PlatformSuffix}.pdf'
+    },'2.29 min'),'260806_Channel 3 - TV - 2.29 min.pdf');
     const edited=getPlatformRegistry();
     edited.find(p=>p.id==='bluesky').dbCode='BLUE';
     savePlatformRegistry(edited);
@@ -149,19 +159,85 @@ test('Phase 2 Letter naming and logo identities follow the Platform Registry',()
     entries.push({id:2,date:'2026-08-06',pub:'CommoCommu',platform:'Instagram'});
     testAssert.equal(p2OutputFileName(entries[0]),'260806_CommoCommu - IG.pdf');
     testAssert.equal(p2OutputFileName(entries[1]),'260806_CommoCommu - IG_02.pdf');
-    testAssert.equal(p2PublicationDisplay({pub:'Morning News',platform:'TV',duration:'2.29 min'}),'Morning News - TV – 2.29 min');
+    testAssert.equal(p2PublicationDisplay({pub:'Morning News',platform:'TV',duration:'2.29 min'}),'Morning News - TV - 2.29 min');
+    testAssert.equal(p2PublicationDisplay({pub:'Example.com',platform:'Website'}),'Example.com');
     testAssert.equal(p2FormatDate('2026-08-13'),'13/08/2026');
     testAssert.equal(P2_LETTER.frame.x,43.5);
     testAssert.equal(P2_LETTER.frame.w,521.85);
     testAssert.deepEqual(P2_LETTER.title,{x:249.65,y:25.8,w:112.7,h:13.56});
     testAssert.equal(P2_LETTER.media.w,128);
     testAssert.equal(P2_LETTER.client.w,128);
-    testAssert.equal(P2_LETTER.content.w,468);
+    testAssert.equal(P2_LETTER.content.w,500);
+    testAssert.equal(P2_LETTER.content.firstH,430);
+    testAssert.equal(P2_LETTER.content.nextH,560);
     testAssert.equal(p2Layout('a4').pageW,595.28);
     testAssert.equal(p2Layout('a4').pageH,841.89);
     testAssert.equal(p2Layout('a4').frame.w,P2_LETTER.frame.w);
     testAssert.equal(p2Layout('a4').content.w,P2_LETTER.content.w);
+    testAssert.equal(p2Layout('a4').content.firstH,430);
+    testAssert.equal(p2Layout('a4').content.nextH,560);
     testAssert.equal(P2_BODY_FONT,'400 8.5px Arial,sans-serif');
     testAssert.equal(P2_LINK_FONT,'400 7.8px Arial,sans-serif');
+    testAssert.equal(p2DpiForQuality('standard'),150);
+    testAssert.equal(p2DpiForQuality('high'),300);
+    testAssert.deepEqual(p2Transform(),{cropLeft:0,cropRight:0,cropTop:0,cropBottom:0,rotation:0,breakRatios:[],scalePercent:100,align:'center',cutVersion:0,manualCuts:[]});
+    testAssert.equal('dataUrl' in p2Transform({id:'legacy',dataUrl:'data:image/png;base64,x'}),false);
+    testAssert.deepEqual(p2Transform({breakRatios:[.5]}).manualCuts,[]);
+    testAssert.deepEqual(p2Transform({cutVersion:2,manualCuts:[.7,.3]}).manualCuts,[.3,.7]);
+    testAssert.deepEqual(p2ManualCutsForOutput({transform:{breakRatios:[.5]}}),[]);
+    testAssert.deepEqual(p2ManualCutsForOutput({transform:{cutVersion:2,manualCuts:[.4]}}),[.4]);
+    testAssert.equal(p2Transform({scalePercent:10,align:'free'}).scalePercent,25);
+    testAssert.equal(p2Transform({scalePercent:120,align:'right'}).scalePercent,100);
+    testAssert.equal(p2Transform({scalePercent:75}).align,'center');
+    testAssert.equal(p2DrawWidthPt({width:2000},P2_LETTER,{scalePercent:100}),500);
+    testAssert.equal(p2DrawWidthPt({width:2000},P2_LETTER,{scalePercent:75}),375);
+    testAssert.equal(p2DrawWidthPt({width:2000},P2_LETTER,{scalePercent:50}),250);
+    testAssert.equal(p2QualityLevel(p2EffectiveDpi({width:2000},P2_LETTER,{scalePercent:100})),'good');
+    testAssert.equal(p2QualityLevel(p2EffectiveDpi({width:800},P2_LETTER,{scalePercent:100})),'warn');
+    testAssert.equal(p2QualityLevel(p2EffectiveDpi({width:800},P2_LETTER,{scalePercent:75})),'good');
+    testAssert.equal(p2QualityLevel(p2EffectiveDpi({width:400},P2_LETTER,{scalePercent:100})),'bad');
+    testAssert.equal(p2SegmentLeft(P2_LETTER,375,'left'),56);
+    testAssert.equal(p2SegmentLeft(P2_LETTER,375,'center'),118.5);
+    testAssert.equal(p2SegmentLeft(P2_LETTER,375,'right'),181);
+    testAssert.equal(p2MaxSegmentPixels({width:1000},430,P2_LETTER,{scalePercent:50})>p2MaxSegmentPixels({width:1000},430,P2_LETTER,{scalePercent:100}),true);
+    let drawArgs=[];
+    p2DrawSegment({drawImage(...args){drawArgs=args;}},{width:2000},{y:0,height:800},true,1,P2_LETTER,{scalePercent:75,align:'right'});
+    testAssert.equal(drawArgs[5],181);
+    testAssert.equal(drawArgs[6],184);
+    testAssert.equal(drawArgs[7],375);
+    const segmentCanvas={width:1200,height:2400,getContext(){return{getImageData(){throw new Error('no pixels');}}}};
+    testAssert.equal(p2AutoSegments(segmentCanvas,true,P2_LETTER,{scalePercent:50}).length<p2AutoSegments(segmentCanvas,true,P2_LETTER,{scalePercent:100}).length,true);
+    const fitsFirst={width:1200,height:1000,getContext(){return{getImageData(){throw new Error('no pixels');}}}};
+    testAssert.equal(p2PageSegments(fitsFirst,[.5],true,P2_LETTER,{scalePercent:100}).length,1);
+    const tinyTail={width:1200,height:1080,getContext(){return{getImageData(){throw new Error('no pixels');}}}};
+    const tinyPages=p2PageSegments(tinyTail,[],true,P2_LETTER,{scalePercent:100});
+    testAssert.equal(tinyPages.length,2);
+    testAssert.equal(tinyPages[1].height*500/1200<=P2_LETTER.content.nextH*.12,true);
+    const manualPages=p2PageSegments(segmentCanvas,[.3],true,P2_LETTER,{scalePercent:100});
+    testAssert.equal(manualPages[0].cutMode,'manual');
+    testAssert.equal(manualPages[0].height,720);
+    const whiteData=new Array(1200*4).fill(255),whiteCanvas={width:1200,height:2600,getContext(){return{getImageData(){return{data:whiteData};}}}};
+    const whitespaceCut=p2PaperBreak(whiteCanvas,0,1032,2600,1344);
+    testAssert.equal(whitespaceCut<1032&&whitespaceCut>=1032-Math.round(1032*.04),true);
+    testAssert.equal(p2PaperBreak({...whiteCanvas,height:1100},0,1032,1100,1344),1032);
+    testAssert.equal(p2PageSegments({width:1200,height:1200,getContext(){return{getImageData(){throw new Error('no pixels');}}}},[],false,P2_LETTER,{scalePercent:100}).length,1);
+    testAssert.equal(p2CanVectorText('PUBLICATION: Example - FB'),true);
   `);
+});
+
+test('Phase 2 PDF builder keeps header metadata as extractable vector text',async()=>{
+  const context=loadPhase2(`
+    globalThis.pdfPromise=p2BuildPdfBlob([{
+      dataUrl:'data:image/jpeg;base64,/9j/2Q==',width:1,height:1,lossless:false,
+      vector:[{text:'PUBLICATION:',x:72,y:106,size:8.5},{text:'Example Media - FB',x:143.5,y:106,size:8.5}]
+    }],612,792).then(async pdf=>{
+      testAssert.equal(pdf.type,'application/pdf');
+      const bytes=new Uint8Array(await pdf.arrayBuffer());
+      const source=new TextDecoder('latin1').decode(bytes);
+      testAssert.equal(source.startsWith('%PDF-1.4'),true);
+      testAssert.equal(source.includes('(PUBLICATION:) Tj'),true);
+      testAssert.equal(source.includes('(Example Media - FB) Tj'),true);
+    });
+  `);
+  await context.pdfPromise;
 });
