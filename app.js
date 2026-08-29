@@ -39,7 +39,8 @@ function readJSON(key, fallback){
 function normalizeEntry(entry){
   const next={...entry};
   const numericId=Number(next.id);
-  next.id=Number.isFinite(numericId)?numericId:Date.now()+Math.floor(Math.random()*1000);
+  next.id=Number.isFinite(numericId)&&String(next.id).trim()!==''?numericId:
+    (typeof next.id==='string'&&next.id.trim()?next.id:Date.now()+Math.floor(Math.random()*1000));
   if(next.prValue!==null&&next.prValue!==''&&Number.isFinite(Number(next.prValue)))next.prValue=Number(next.prValue);
   else next.prValue=null;
   if(!WORK_STATUSES.includes(next.status))next.status='draft';
@@ -71,6 +72,22 @@ const DEFAULT_PLATFORM_REGISTRY=[
 ];
 const PLATFORM_REGISTRY_KEY='ck_platform_registry';
 let _platformRegistryCache=null;
+let _legacyHydratedState=null;
+
+function cloneLegacyValue(value){
+  if(Array.isArray(value))return value.map(cloneLegacyValue);
+  if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,cloneLegacyValue(item)]));
+  return value;
+}
+function installLegacySnapshot(snapshot){
+  _legacyHydratedState={
+    activeProjectId:String(snapshot.activeProjectId),
+    projects:cloneLegacyValue(snapshot.projects||[]),entries:cloneLegacyValue(snapshot.entries||[]),
+    mediaRows:cloneLegacyValue(snapshot.mediaRows||[]),platforms:cloneLegacyValue(snapshot.platforms||[]),
+    usernameMap:cloneLegacyValue(snapshot.usernameMap||{})
+  };
+  _platformRegistryCache=null;
+}
 
 function platformId(name){
   const base=String(name||'platform').trim().toLowerCase().replace(/[^a-z0-9ก-๙]+/g,'-').replace(/^-|-$/g,'');
@@ -85,6 +102,7 @@ function normalizePlatformRecord(record){
   };
 }
 function getPlatformRegistry(){
+  if(_legacyHydratedState)return cloneLegacyValue(_legacyHydratedState.platforms);
   if(_platformRegistryCache)return _platformRegistryCache;
   const stored=readJSON(PLATFORM_REGISTRY_KEY,[]);
   const byId=new Map(DEFAULT_PLATFORM_REGISTRY.map(p=>[p.id,normalizePlatformRecord(p)]));
@@ -97,6 +115,7 @@ function getPlatformRegistry(){
 }
 function savePlatformRegistry(registry){
   _platformRegistryCache=registry.map(normalizePlatformRecord).filter(p=>p.name);
+  if(_legacyHydratedState)_legacyHydratedState.platforms=cloneLegacyValue(_platformRegistryCache);
   safeLS.setItem(PLATFORM_REGISTRY_KEY,JSON.stringify(_platformRegistryCache));
 }
 function getPlatformDefinition(value){
@@ -116,12 +135,12 @@ const SOCIAL_DOMAINS={'instagram.com':'Instagram','facebook.com':'Facebook','fb.
 const STRIP_TLDS=['.co.th','.com.th','.or.th','.in.th','.ac.th','.go.th','.mi.th','.net.th','.com','.net','.org','.edu','.gov','.io','.me','.tv','.th'];
 
 // ═══ STORAGE ═══
-function getCustom(){const v=readJSON('ck_custom',[]);return Array.isArray(v)?v:[];}
-function saveCustom(a){safeLS.setItem('ck_custom',JSON.stringify(a));}
-function getImported(){const v=readJSON('ck_imported',[]);return Array.isArray(v)?v:[];}
-function saveImported(a){safeLS.setItem('ck_imported',JSON.stringify(a));}
-function getUsernameMap(){const v=readJSON('ck_umap',{});return v&&typeof v==='object'&&!Array.isArray(v)?v:{};}
-function saveUsernameMap(m){safeLS.setItem('ck_umap',JSON.stringify(m));}
+function getCustom(){if(_legacyHydratedState)return cloneLegacyValue(_legacyHydratedState.mediaRows.filter(row=>row._src==='custom'));const v=readJSON('ck_custom',[]);return Array.isArray(v)?v:[];}
+function saveCustom(a){if(_legacyHydratedState)_legacyHydratedState.mediaRows=[..._legacyHydratedState.mediaRows.filter(row=>row._src!=='custom'),...cloneLegacyValue(a).map(row=>({...row,_src:'custom'}))];safeLS.setItem('ck_custom',JSON.stringify(a));}
+function getImported(){if(_legacyHydratedState)return cloneLegacyValue(_legacyHydratedState.mediaRows.filter(row=>row._src==='imported'));const v=readJSON('ck_imported',[]);return Array.isArray(v)?v:[];}
+function saveImported(a){if(_legacyHydratedState)_legacyHydratedState.mediaRows=[..._legacyHydratedState.mediaRows.filter(row=>row._src!=='imported'),...cloneLegacyValue(a).map(row=>({...row,_src:'imported'}))];safeLS.setItem('ck_imported',JSON.stringify(a));}
+function getUsernameMap(){if(_legacyHydratedState)return cloneLegacyValue(_legacyHydratedState.usernameMap);const v=readJSON('ck_umap',{});return v&&typeof v==='object'&&!Array.isArray(v)?v:{};}
+function saveUsernameMap(m){if(_legacyHydratedState)_legacyHydratedState.usernameMap=cloneLegacyValue(m);safeLS.setItem('ck_umap',JSON.stringify(m));}
 
 function addUsernameMapping(username,platform,pub){
   if(!username||!pub)return;
@@ -191,6 +210,7 @@ let _activeProj = safeLS.getItem('ck_active_proj') || DEFAULT_PROJ;
 function projKey(pid){ return PROJ_PREFIX + pid; }
 
 function getAllProjects(){
+  if(_legacyHydratedState)return cloneLegacyValue(_legacyHydratedState.projects);
   const storedProjects=readJSON('ck_projects',[]);
   const list = (Array.isArray(storedProjects)?storedProjects:[]).map(p=>({
     ...p,
@@ -207,31 +227,43 @@ function getAllProjects(){
 }
 
 function saveProjectList(list){
+  if(_legacyHydratedState)_legacyHydratedState.projects=cloneLegacyValue(list);
   safeLS.setItem('ck_projects', JSON.stringify(list));
 }
 
 function getProjEntries(pid){
+  if(_legacyHydratedState)return String(pid)===String(_legacyHydratedState.activeProjectId)?cloneLegacyValue(_legacyHydratedState.entries):[];
   const value=readJSON(projKey(pid),[]);
   return (Array.isArray(value)?value:[]).map(normalizeEntry);
 }
 
 function saveProjEntries(pid, arr){
+  if(_legacyHydratedState&&String(pid)===String(_legacyHydratedState.activeProjectId))_legacyHydratedState.entries=cloneLegacyValue(arr.map(normalizeEntry));
   safeLS.setItem(projKey(pid), JSON.stringify(arr.map(normalizeEntry)));
 }
+
+function sameEntryId(left,right){return String(left)===String(right);}
+function entryById(id){return entries.find(entry=>sameEntryId(entry.id,id));}
+function entryIndexById(id){return entries.findIndex(entry=>sameEntryId(entry.id,id));}
 
 function getActiveProject(){
   return getAllProjects().find(p=>p.id===_activeProj)||getAllProjects()[0];
 }
 
-function switchProject(pid, force){
+async function switchProject(pid, force){
   if(pid === _activeProj && !force) return;
-  // Save current entries to current project first
-  saveProjEntries(_activeProj, entries);
-  // Load new project
+  let loaded;
+  if(_legacyHydratedState){
+    const snapshot=await ClipKitLegacyAdapter.hydrate(pid);
+    installLegacySnapshot(snapshot);
+    loaded=snapshot.entries;
+  }else{
+    // Save current entries to current project first
+    saveProjEntries(_activeProj, entries);
+    loaded=getProjEntries(pid);
+  }
   _activeProj = pid;
   safeLS.setItem('ck_active_proj', pid);
-  // Reassign global entries
-  const loaded = getProjEntries(pid);
   entries.length = 0;
   loaded.forEach(e => entries.push(e));
   // Update URL history for new project
@@ -1406,7 +1438,7 @@ let _validationItems=[];
 
 function applyValidationFix(index){
   const item=_validationItems[index];if(!item)return;
-  if(item.fixAction==='highlight')highlightEntry(Number(item.fixValue));
+  if(item.fixAction==='highlight')highlightEntry(item.fixValue);
   if(item.fixAction==='platform'){document.getElementById('fPlat').value=item.fixValue;_autoFilledPlat=false;onPubIn();}
   if(item.fixAction==='publication'){document.getElementById('fPub').value=item.fixValue;_autoFilledPub=false;}
   if(item.fixAction==='date')document.getElementById('fDate').value=item.fixValue;
@@ -1431,7 +1463,7 @@ function renderValidation(){
   const dupWarn = all.find(i=>i.type==='warn'&&i.msg&&i.msg.includes('URL'));
   const dupItem = dupErr || dupWarn;
   if(dupItem && dupItem.fixAction==='highlight'){
-    showDupBadge(Number(dupItem.fixValue));
+    showDupBadge(dupItem.fixValue);
   } else {
     hideDupBadge();
   }
@@ -1711,7 +1743,7 @@ async function prepareCaptureFile(file){
   return{id:'cap-'+Date.now()+'-'+Math.random().toString(36).slice(2,7),name:file.name||'clipboard.png',type:'image/jpeg',dataUrl:canvas.toDataURL('image/jpeg',.9),width:size.width,height:size.height,createdAt:new Date().toISOString()};
 }
 async function openCapture(entryId){
-  const entry=entries.find(e=>e.id===Number(entryId));if(!entry)return;
+  const entry=entryById(entryId);if(!entry)return;
   _captureEntryId=entry.id;
   const modal=document.getElementById('captureModal');modal.style.display='flex';
   document.getElementById('capturePub').textContent=entry.pub;
@@ -2069,7 +2101,7 @@ function clearDupHighlight(){
   _dupHighlightId = null;
 }
 function dupEntry(id){
-  const src=entries.find(e=>e.id===id);
+  const src=entryById(id);
   if(!src)return;
   const now=new Date().toISOString();
   const copy={...src,id:Date.now(),url:'',status:'draft',createdAt:now,updatedAt:now,fileName:buildFN(src.date,src.pub,src.platform)};
@@ -2092,7 +2124,7 @@ function saveEdit(id){
   if(url&&!safeHttpUrl(url)){toast('URL ต้องขึ้นต้นด้วย http:// หรือ https://','err');return;}
   const prValue=prRaw&&!isNaN(Number(prRaw))?Number(prRaw):(()=>{const f=lookupPR(pub,plat);return f?f.value:null;})();
   const f=lookupPR(pub,plat);
-  const idx=entries.findIndex(e=>e.id===id);if(idx<0)return;
+  const idx=entryIndexById(id);if(idx<0)return;
   entries[idx]={...entries[idx],pub,platform:plat,date,url,prValue,
     fullKey:(f&&f.platform===plat)?f.key:makeDbKey(pub,plat),
     fileName:buildFN(date,pub,plat),
@@ -2132,7 +2164,7 @@ function clearForm(){
 }
 let _undoTimer=null,_undoEntry=null,_undoIdx=-1;
 function delEntry(id){
-  const idx=entries.findIndex(e=>e.id===id);
+  const idx=entryIndexById(id);
   if(idx<0)return;
   _undoEntry={...entries[idx]};_undoIdx=idx;
   if(_undoEntry.url)removeUrlFromHistory(_undoEntry.url);
@@ -2234,7 +2266,8 @@ function renderTable(){
       +(hasEntries?'':'<div style="margin-top:10px;font-size:11px;color:var(--text3)">💡 กด Enter เพื่อเพิ่มรายการเร็วขึ้น</div>')
       +'</td></tr>';return;}
   tb.innerHTML=filt.map(e=>{
-    if(editingRowId===e.id){
+    if(editingRowId!==null&&sameEntryId(editingRowId,e.id)){
+      const entryArg=inlineJsArg(e.id);
       return '<tr style="background:#f5f3ff;border-bottom:2px solid var(--accent)">'
         +'<td class="batch-select-col"></td>'
         +'<td><input class="erinp" id="er_date" type="date" value="'+escAttr(e.date||'')+'" style="width:130px"></td>'
@@ -2244,7 +2277,7 @@ function renderTable(){
         +'<td colspan="2"><input class="erinp" id="er_logo" value="'+escAttr(e.logoFile||'')+'" style="font-size:11px;margin-bottom:4px"><input class="erinp" id="er_type" value="'+escAttr(e.type||'')+'" style="font-size:11px;margin-bottom:4px"><input class="erinp" id="er_duration" value="'+escAttr(e.duration||'')+'" placeholder="Duration (TV)" style="font-size:11px"></td>'
         +'<td><select class="ersel" id="er_status">'+WORK_STATUSES.map(s=>'<option value="'+s+'"'+(s===(e.status||'draft')?' selected':'')+'>'+statusMeta(s).label+'</option>').join('')+'</select></td>'
         +'<td style="white-space:nowrap;vertical-align:middle">'
-        +'<button class="save-row-btn" onclick="saveEdit('+e.id+')">✓ บันทึก</button> '
+        +'<button class="save-row-btn" onclick="saveEdit('+entryArg+')">✓ บันทึก</button> '
         +'<button class="cancel-row-btn" onclick="editingRowId=null;renderTable()">ยกเลิก</button></td></tr>';
     }
     const prC=e.prValue?(e.prValue>=360000?'color:var(--green)':e.prValue>=210000?'color:var(--accent)':''):'color:var(--text3)';
@@ -2253,8 +2286,9 @@ function renderTable(){
     const urlS=e.url?e.url.replace(/https?:\/\//,'').slice(0,28)+'…':'—';
     const fnChip=e.fileName?'<span class="fn-chip">📄 '+esc(e.fileName)+'</span>':'<span style="color:var(--text3);font-size:11px">—</span>';
     // [BUG FIX] Conditionally render optional columns based on checkbox state
-    return '<tr data-entry-id="'+e.id+'">'
-      +'<td class="batch-select-col"><input class="batch-row-check" type="checkbox" value="'+e.id+'" onchange="toggleBatchRow('+e.id+',this.checked)" aria-label="เลือก '+escAttr(e.pub)+'"></td>'
+    const entryArg=inlineJsArg(e.id);
+    return '<tr data-entry-id="'+escAttr(e.id)+'">'
+      +'<td class="batch-select-col"><input class="batch-row-check" type="checkbox" value="'+escAttr(e.id)+'" onchange="toggleBatchRow('+entryArg+',this.checked)" aria-label="เลือก '+escAttr(e.pub)+'"></td>'
       +'<td class="td-mono">'+esc(e.date||'—')+'</td>'
       +'<td><div class="td-pub">'+esc(e.pub)+'</div>'
         +(colVis('col_url')&&safeHttpUrl(e.url)?'<div style="margin-top:2px"><a href="'+escAttr(safeHttpUrl(e.url))+'" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:var(--accent);text-decoration:none;opacity:.8">'+esc(urlS)+'</a></div>':'')
@@ -2266,10 +2300,10 @@ function renderTable(){
       +(colVis('col_type')?'<td style="font-size:11px;color:var(--text2)">'+esc(e.type||'—')+'</td>':'')
       +(colVis('col_status')?'<td><span class="work-status '+workStatus.cls+'">'+workStatus.label+'</span>'+(dataWarning?'<div style="font-size:9px;color:var(--red);margin-top:3px">⚠ '+dataWarning+'</div>':'')+'</td>':'')
       +'<td style="white-space:nowrap">'
-      +'<button class="sbtn capture-btn" onclick="openCapture('+e.id+')" title="เก็บภาพและสร้าง PDF">📸 '+(e.captureCount||'Capture')+'</button> '
-      +'<button class="sbtn edit-btn" onclick="editingRowId='+e.id+';renderTable()">✏ แก้</button> '
-      +'<button class="sbtn" onclick="dupEntry('+e.id+')" title="Duplicate entry" style="font-size:11px">⧉</button> '
-      +'<button class="sbtn del" onclick="delEntry('+e.id+')">ลบ</button></td></tr>';
+      +'<button class="sbtn capture-btn" onclick="openCapture('+entryArg+')" title="เก็บภาพและสร้าง PDF">📸 '+(e.captureCount||'Capture')+'</button> '
+      +'<button class="sbtn edit-btn" data-id="'+escAttr(e.id)+'" onclick="editingRowId='+entryArg+';renderTable()">✏ แก้</button> '
+      +'<button class="sbtn" onclick="dupEntry('+entryArg+')" title="Duplicate entry" style="font-size:11px">⧉</button> '
+      +'<button class="sbtn del" onclick="delEntry('+entryArg+')">ลบ</button></td></tr>';
   }).join('');
   const total=entries.reduce((s,e)=>s+(e.prValue||0),0);
   const MAIN_PLATS=['Facebook','Instagram','Web','Website','YouTube','TV','TikTok','X','LINE TODAY','LINE'];
@@ -2537,6 +2571,7 @@ function renderDB(){
 
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function escAttr(s){return esc(s).replace(/`/g,'&#96;');}
+function inlineJsArg(value){return escAttr(JSON.stringify(value));}
 function safeHttpUrl(value){
   try{const u=new URL(String(value||'').trim());return ['http:','https:'].includes(u.protocol)?u.href:'';}
   catch{return '';}
@@ -2710,6 +2745,7 @@ async function bootstrapClipKit(){
       safeLS.setItem('ck_active_proj',_activeProj);
       if(snapshot.activeProjectId!==_activeProj)snapshot=await ClipKitLegacyAdapter.hydrate(_activeProj);
     }
+    installLegacySnapshot(snapshot);
     entries.length=0;
     snapshot.entries.forEach(entry=>entries.push(entry));
     rebuildDB();

@@ -57,7 +57,7 @@ function p2PublicationDisplay(entry,publication){
 }
 function p2OutputFileName(entry,publication){
   const base=p2SafeName(buildOutputFileName(entry.date,publication||entry.pub,entry.platform,getActiveProject(),entry.duration)).replace(/\.pdf$/i,'');
-  const peers=entries.filter(e=>e.id!==entry.id&&e.date===entry.date&&p2Norm(e.pub)===p2Norm(entry.pub)&&e.platform===entry.platform&&Number(e.id)<Number(entry.id)).length;
+  const entryIndex=entries.findIndex(e=>sameEntryId(e.id,entry.id)),peers=entries.filter((e,index)=>index<entryIndex&&e.date===entry.date&&p2Norm(e.pub)===p2Norm(entry.pub)&&e.platform===entry.platform).length;
   return base+(peers?'_'+String(peers+1).padStart(2,'0'):'')+'.pdf';
 }
 function p2FormatDate(value){const m=String(value||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);return m?m[3]+'/'+m[2]+'/'+m[1]:String(value||'');}
@@ -219,10 +219,10 @@ async function setAgencyAsGlobal(){
   if(!id){toast('เลือกหรือเพิ่มโลโก้บริษัทก่อน','err');return;}p2SaveGlobal({agencyLogoAssetId:id});toast('✓ ตั้งเป็นโลโก้บริษัทค่าเริ่มต้นแล้ว','ok');await p2PopulateSettings();
 }
 
-function toggleBatchRow(id,checked){if(checked)p2SelectedIds.add(Number(id));else p2SelectedIds.delete(Number(id));p2SyncSelection();}
-function toggleAllBatchRows(checked){document.querySelectorAll('.batch-row-check').forEach(cb=>{cb.checked=checked;toggleBatchRow(Number(cb.value),checked);});}
+function toggleBatchRow(id,checked){const key=String(id);if(checked)p2SelectedIds.add(key);else p2SelectedIds.delete(key);p2SyncSelection();}
+function toggleAllBatchRows(checked){document.querySelectorAll('.batch-row-check').forEach(cb=>{cb.checked=checked;toggleBatchRow(cb.value,checked);});}
 function p2SyncSelection(){
-  document.querySelectorAll('.batch-row-check').forEach(cb=>cb.checked=p2SelectedIds.has(Number(cb.value)));
+  document.querySelectorAll('.batch-row-check').forEach(cb=>cb.checked=p2SelectedIds.has(String(cb.value)));
   const count=document.getElementById('batchSelectedCount'),btn=document.getElementById('batchPdfBtn');if(count)count.textContent=p2SelectedIds.size;if(btn)btn.disabled=!p2SelectedIds.size;
   const all=document.getElementById('batchSelectAll'),boxes=[...document.querySelectorAll('.batch-row-check')];if(all){all.checked=boxes.length>0&&boxes.every(cb=>cb.checked);all.indeterminate=boxes.some(cb=>cb.checked)&&!all.checked;}
 }
@@ -301,7 +301,7 @@ prepareCaptureFile=async function(file){
 const p2BaseOpenCapture=openCapture;
 openCapture=async function(entryId){
   await p2BaseOpenCapture(entryId);
-  const entry=entries.find(e=>e.id===Number(entryId));if(!entry)return;
+  const entry=entryById(entryId);if(!entry)return;
   const project=getActiveProject(),template=document.getElementById('captureTemplate');if(template)template.value=project.pdfTemplate||'news';
   const quality=document.getElementById('captureQuality');if(quality)quality.value=project.pdfQuality||'standard';
   const file=document.getElementById('captureFileName');if(file)file.textContent=p2OutputFileName(entry);
@@ -464,7 +464,7 @@ exportCapturePDF=async function(){
   if(!_captureEntryId||!_captureImages.length)return;await openPdfPreview(_captureEntryId);
 };
 async function openPdfPreview(entryId,fromBatch=false){
-  const entry=entries.find(e=>e.id===Number(entryId));if(!entry)return;
+  const entry=entryById(entryId);if(!entry)return;
   if(_captureEntryId!==entry.id){const record=await getCaptureRecord(_activeProj,entry.id);_captureImages=Array.isArray(record.images)?record.images:[];}
   p2PreviewEntryId=entry.id;p2PreviewSessionLogoId='';document.getElementById('pdfPreviewModal').style.display='flex';
   document.getElementById('previewPublication').value=entry.pub||'';document.getElementById('previewDate').value=entry.date||'';document.getElementById('previewLink').value=entry.url||'';document.getElementById('previewPrValue').value=entry.prValue||'';document.getElementById('previewDuration').value=entry.duration||'';document.getElementById('previewDurationWrap').style.display=entry.platform==='TV'?'':'none';
@@ -493,7 +493,7 @@ async function downloadPreviewPdf(){
 }
 
 async function openBatchExport(){
-  const chosen=entries.filter(e=>p2SelectedIds.has(Number(e.id)));if(!chosen.length){toast('เลือกรายการข่าวก่อน','err');return;}
+  const chosen=entries.filter(e=>p2SelectedIds.has(String(e.id)));if(!chosen.length){toast('เลือกรายการข่าวก่อน','err');return;}
   const template=getActiveProject().pdfTemplate||'news';document.getElementById('batchPdfModal').style.display='flex';document.getElementById('batchCardGrid').innerHTML='<div class="logo-empty">กำลังตรวจ '+chosen.length+' รายการ…</div>';p2BatchRows=[];
   for(let i=0;i<chosen.length;i++){
     const entry=chosen[i];let images=[],logo=null,preview='',qualityRows=[];
@@ -508,7 +508,7 @@ function closeBatchExport(){document.getElementById('batchPdfModal').style.displ
 function refreshBatchExport(){
   const grid=document.getElementById('batchCardGrid'),skip=document.getElementById('batchSkipInvalid').checked,invalid=p2BatchRows.filter(r=>r.issues.length),ready=p2BatchRows.length-invalid.length;
   document.getElementById('batchPdfSummary').textContent=ready+' พร้อม · '+invalid.length+' ต้องตรวจสอบ';
-  grid.innerHTML=p2BatchRows.map(row=>{const name=p2OutputFileName(row.entry),low=row.qualityRows.some(q=>q.level==='bad'),small=row.qualityRows.some(q=>q.readabilityWarning),tinyTail=row.qualityRows.some(q=>q.tinyTail),state=row.exportStatus==='failed'?'✕ บันทึกไม่สำเร็จ · '+esc(row.exportError||''):row.exportStatus==='exported'?'✓ บันทึกสำเร็จ':row.issues.length?'⚠ '+esc(row.issues.join(' · ')):low?'⚠ ภาพต่ำกว่า 100 DPI · ต้องยืนยัน':small?'⚠ Scale ต่ำกว่า 50% · ตัวหนังสืออาจเล็ก':tinyTail?'⚠ หน้าสุดท้ายเหลือเนื้อหาเล็กน้อย':'✓ พร้อมสร้าง PDF';return '<article class="batch-card '+(row.issues.length||row.exportStatus==='failed'?'invalid':'ready')+'"><div class="batch-card-preview">'+(row.preview?'<img src="'+escAttr(row.preview)+'" alt="หน้าแรก">':'NO PREVIEW')+'</div><div class="batch-card-info"><strong>'+esc(p2PublicationDisplay(row.entry,row.entry.pub))+'</strong><span>'+esc(name)+'</span><span>'+row.images.length+' Capture · '+esc(row.entry.platform)+' · '+(row.template==='standard'?'A4':'Letter')+'</span><div class="batch-card-status">'+state+'</div><button type="button" onclick="previewBatchEntry('+row.entry.id+')">เปิด Preview</button></div></article>';}).join('');
+  grid.innerHTML=p2BatchRows.map(row=>{const name=p2OutputFileName(row.entry),low=row.qualityRows.some(q=>q.level==='bad'),small=row.qualityRows.some(q=>q.readabilityWarning),tinyTail=row.qualityRows.some(q=>q.tinyTail),state=row.exportStatus==='failed'?'✕ บันทึกไม่สำเร็จ · '+esc(row.exportError||''):row.exportStatus==='exported'?'✓ บันทึกสำเร็จ':row.issues.length?'⚠ '+esc(row.issues.join(' · ')):low?'⚠ ภาพต่ำกว่า 100 DPI · ต้องยืนยัน':small?'⚠ Scale ต่ำกว่า 50% · ตัวหนังสืออาจเล็ก':tinyTail?'⚠ หน้าสุดท้ายเหลือเนื้อหาเล็กน้อย':'✓ พร้อมสร้าง PDF';return '<article class="batch-card '+(row.issues.length||row.exportStatus==='failed'?'invalid':'ready')+'"><div class="batch-card-preview">'+(row.preview?'<img src="'+escAttr(row.preview)+'" alt="หน้าแรก">':'NO PREVIEW')+'</div><div class="batch-card-info"><strong>'+esc(p2PublicationDisplay(row.entry,row.entry.pub))+'</strong><span>'+esc(name)+'</span><span>'+row.images.length+' Capture · '+esc(row.entry.platform)+' · '+(row.template==='standard'?'A4':'Letter')+'</span><div class="batch-card-status">'+state+'</div><button type="button" onclick="previewBatchEntry('+inlineJsArg(row.entry.id)+')">เปิด Preview</button></div></article>';}).join('');
   const button=document.getElementById('batchDownloadBtn');button.disabled=!ready||(!skip&&invalid.length>0);document.getElementById('batchStatus').textContent=invalid.length?(skip?'จะข้าม '+invalid.length+' รายการ':'กรุณากลับไปแก้ไขรายการที่ไม่พร้อม'):'พร้อมสร้าง '+ready+' PDF';
 }
 async function previewBatchEntry(id){closeBatchExport();await openCapture(id);await openPdfPreview(id,true);}

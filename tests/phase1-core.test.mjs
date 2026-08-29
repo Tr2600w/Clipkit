@@ -37,7 +37,7 @@ function loadApp(extra='',seedLocal={}){
   const context={
     console,URL,Blob,Date,JSON,Map,Set,Math,Number,String,Object,Array,RegExp,TextEncoder,TextDecoder,
     Uint8Array,atob,crypto:webcrypto,indexedDB,IDBKeyRange,structuredClone,
-    setTimeout,clearTimeout,localStorage:storage(seedLocal),sessionStorage:storage(),document,
+    setTimeout,clearTimeout,requestAnimationFrame:noop,localStorage:storage(seedLocal),sessionStorage:storage(),document,
     window:{},confirm:()=>false,FileReader:function(){},testAssert:assert
   };
   context.window.window=context.window;
@@ -63,7 +63,7 @@ function loadPhase2(extra=''){
   const indexedDB=new IDBFactory();
   const context={
     console,URL,Blob,Date,JSON,Map,Set,Math,Number,String,Object,Array,RegExp,TextEncoder,TextDecoder,
-    Uint8Array,Uint32Array,DataView,atob,setTimeout,clearTimeout,crypto:webcrypto,indexedDB,IDBKeyRange,structuredClone,
+    Uint8Array,Uint32Array,DataView,atob,setTimeout,clearTimeout,requestAnimationFrame:noop,crypto:webcrypto,indexedDB,IDBKeyRange,structuredClone,
     localStorage:storage(),sessionStorage:storage(),
     document,window:{},confirm:()=>false,FileReader:function(){},testAssert:assert
   };
@@ -98,6 +98,84 @@ test('bootstrap waits for verified migration before hydration and populates the 
   await vm.runInContext('bootstrapClipKit()',context);
   assert.deepEqual(context.bootstrapOrder,['migration:start','migration:verified','hydrate:default']);
   vm.runInContext("testAssert.equal(entries[0].id,'entry-uuid')",context);
+});
+
+test('bootstrap wires every hydrated projection into legacy read sources',async()=>{
+  const context=loadApp('',{
+    ck_active_proj:'idb-project',
+    ck_projects:JSON.stringify([{id:'stale-project',name:'Stale project'}]),
+    ck_custom:JSON.stringify([{pub:'Stale custom',platform:'Website',value:1}]),
+    ck_imported:JSON.stringify([{pub:'Stale imported',platform:'Website',value:2}]),
+    ck_platform_registry:JSON.stringify([{id:'stale',name:'Stale platform'}]),
+    ck_umap:JSON.stringify({'website:stale':{username:'stale',platform:'Website',pub:'Stale'}})
+  });
+  context.ClipKitMigration.migrate=async()=>({state:'verified',verification:{ok:true}});
+  context.renderRecent=()=>{};
+  context.ClipKitLegacyAdapter.hydrate=async projectId=>({
+    activeProjectId:projectId,
+    projects:[
+      {id:'idb-project',name:'IndexedDB Project',clientName:'IndexedDB Client'},
+      {id:'second-project',name:'Second Project',clientName:'Second Client'}
+    ],
+    entries:[{id:projectId==='second-project'?'second-entry':'entry-uuid',date:'2026-08-18',pub:projectId==='second-project'?'Second News':'IndexedDB News',platform:'Fedi',prValue:150000,status:'draft'}],
+    mediaRows:[
+      {id:'media-custom',pub:'IndexedDB Custom',platform:'Fedi',value:150000,_src:'custom'},
+      {id:'media-imported',pub:'IndexedDB Imported',platform:'Fedi',value:210000,_src:'imported'}
+    ],
+    platforms:[{id:'fedi',name:'Fedi',dbCode:'FD',fileCode:'FD',builtin:false,active:true,aliases:[]}],
+    usernameMap:{'fedi:idb':{username:'idb',platform:'Fedi',pub:'IndexedDB Custom'}}
+  });
+
+  await vm.runInContext('bootstrapClipKit()',context);
+
+  vm.runInContext(`
+    testAssert.equal(JSON.stringify(getAllProjects().map(project=>project.id)),JSON.stringify(['idb-project','second-project']));
+    testAssert.equal(JSON.stringify(getCustom().map(row=>row.pub)),JSON.stringify(['IndexedDB Custom']));
+    testAssert.equal(JSON.stringify(getImported().map(row=>row.pub)),JSON.stringify(['IndexedDB Imported']));
+    testAssert.equal(JSON.stringify(getPlatformRegistry().map(platform=>platform.name)),JSON.stringify(['Fedi']));
+    testAssert.equal(JSON.stringify(getUsernameMap()),JSON.stringify({'fedi:idb':{username:'idb',platform:'Fedi',pub:'IndexedDB Custom'}}));
+    testAssert.equal(DB.some(row=>row.pub==='IndexedDB Custom'&&row.platform==='Fedi'),true);
+    testAssert.equal(DB.some(row=>row.pub==='Stale custom'),false);
+  `,context);
+  await vm.runInContext("switchProject('second-project')",context);
+  vm.runInContext(`
+    testAssert.equal(_activeProj,'second-project');
+    testAssert.equal(entries.length,1);
+    testAssert.equal(entries[0].id,'second-entry');
+    testAssert.equal(getProjEntries('second-project')[0].id,'second-entry');
+  `,context);
+});
+
+test('rendered migrated UUID actions remain callable across row, Capture, PDF, and batch flows',async()=>{
+  const context=loadPhase2();
+  const id='00000000-0000-4000-8000-000000000123';
+  context.testEntryId=id;
+  await vm.runInContext(`(async()=>{
+    entries.length=0;
+    entries.push({id:testEntryId,date:'2026-08-18',pub:'UUID News',platform:'Website',prValue:150000,status:'draft',captureCount:0});
+    entries.push({id:'00000000-0000-4000-8000-000000000124',date:'2026-08-18',pub:'UUID News',platform:'Website',prValue:150000,status:'draft',captureCount:0});
+    testAssert.equal(p2OutputFileName({...entries[1]}),'260818_UUID News_02.pdf');
+    entries.pop();
+    renderTable();
+    const html=document.getElementById('tbody').innerHTML;
+    testAssert.match(html,new RegExp('openCapture\\\\(&quot;'+testEntryId+'&quot;\\\\)'));
+    testAssert.match(html,new RegExp('dupEntry\\\\(&quot;'+testEntryId+'&quot;\\\\)'));
+    testAssert.match(html,new RegExp('delEntry\\\\(&quot;'+testEntryId+'&quot;\\\\)'));
+    testAssert.match(html,new RegExp('editingRowId=&quot;'+testEntryId+'&quot;'));
+    dupEntry(testEntryId);
+    testAssert.equal(entries.length,2);
+    delEntry(testEntryId);
+    testAssert.equal(entries.some(entry=>entry.id===testEntryId),false);
+    entries.unshift({id:testEntryId,date:'2026-08-18',pub:'UUID News',platform:'Website',prValue:150000,status:'draft',captureCount:0});
+    await openCapture(testEntryId);
+    testAssert.equal(_captureEntryId,testEntryId);
+    await openPdfPreview(testEntryId);
+    testAssert.equal(p2PreviewEntryId,testEntryId);
+    toggleBatchRow(testEntryId,true);
+    testAssert.equal(p2SelectedIds.has(testEntryId),true);
+    await openBatchExport();
+    testAssert.equal(p2BatchRows[0].entry.id,testEntryId);
+  })()`,context);
 });
 
 test('bootstrap rejects migration failure and renders a blocking recovery panel',async()=>{

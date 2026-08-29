@@ -96,18 +96,46 @@ test('adapter hydrates a migrated entry into the exact legacy projection', async
   }
 });
 
-test('fresh projections leave the adapter cache unchanged when a repository write rejects', async () => {
+test('adapter refreshes only after a repository write commits and preserves visible cache on rejection', async () => {
   const {context, cleanup} = await compatibilityContext('legacy-adapter-rejection');
   try {
     await seedLegacyView(context);
     await context.ClipKitLegacyAdapter.hydrate('default');
-    const optimisticView = context.ClipKitLegacyAdapter.getEntries('default');
-    optimisticView[0].status = 'completed';
-    context.ClipKitRepository.entries.put = async () => { throw new Error('write rejected'); };
-
-    await assert.rejects(context.ClipKitRepository.entries.put(optimisticView[0]), /write rejected/);
+    const before = context.ClipKitLegacyAdapter.getEntries('default');
+    await assert.rejects(
+      context.ClipKitLegacyAdapter.refreshAfter(async () => { throw new Error('write rejected'); }),
+      /write rejected/
+    );
     assert.equal(context.ClipKitLegacyAdapter.getEntries('default')[0].status, 'draft');
-    assert.notEqual(context.ClipKitLegacyAdapter.getEntries('default')[0], optimisticView[0]);
+    assert.notEqual(context.ClipKitLegacyAdapter.getEntries('default')[0], before[0]);
+
+    const canonical = await context.ClipKitRepository.entries.get('entry-uuid');
+    await context.ClipKitLegacyAdapter.refreshAfter(() => context.ClipKitRepository.entries.put({
+      ...canonical, workflowStatus: 'completed', recordVersion: canonical.recordVersion + 1
+    }));
+    assert.equal(context.ClipKitLegacyAdapter.getEntries('default')[0].status, 'completed');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('verified localStorage migration hydrates its opaque entry ID through the adapter', async () => {
+  const legacySeed = {
+    ck_schema_version: '3',
+    ck_projects: JSON.stringify([{id: 'alpha', name: 'Alpha', clientName: 'Alpha Client'}]),
+    ck_proj_alpha: JSON.stringify([{id: 7, pub: 'Daily Alpha', platform: 'Website', date: '2026-08-18', prValue: 150000}]),
+    ck_custom: JSON.stringify([{key: 'Daily Alpha', pub: 'Daily Alpha', platform: 'Website', value: 150000}]),
+    ck_imported: '[]',
+    ck_platform_registry: JSON.stringify([{id: 'website', name: 'Website', dbCode: '', fileCode: '', active: true}]),
+    ck_umap: '{}'
+  };
+  const {context, cleanup} = await compatibilityContext('migration-adapter-boundary', legacySeed);
+  try {
+    const migration = await context.ClipKitMigration.migrate();
+    assert.equal(migration.state, 'verified');
+    const snapshot = await context.ClipKitLegacyAdapter.hydrate('alpha');
+    assert.match(snapshot.entries[0].id, /^[0-9a-f-]{36}$/i);
+    assert.equal(snapshot.entries[0].pub, 'Daily Alpha');
   } finally {
     await cleanup();
   }

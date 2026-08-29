@@ -196,8 +196,15 @@
     };
   }
 
+  async function refreshAfter(write, activeProjectId = cache.activeProjectId) {
+    if (typeof write !== 'function') throw new TypeError('refreshAfter requires a write function');
+    await write();
+    return hydrate(activeProjectId);
+  }
+
   global.ClipKitLegacyAdapter = {
     hydrate,
+    refreshAfter,
     getProjects,
     getEntries,
     getMediaRows,
