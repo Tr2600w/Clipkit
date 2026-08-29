@@ -60,7 +60,18 @@ test('sparse aliases, mappings, and provenance are rejected before any save writ
       );
     }
 
-    for (const storeName of ['entries', 'mediaAliases', 'domainMappings', 'provenance', 'auditEvents', 'meta']) {
+    for (const storeName of [
+      'meta',
+      'entries',
+      'media',
+      'mediaAliases',
+      'domainMappings',
+      'usernameMappings',
+      'mediaPlatformMappings',
+      'provenance',
+      'inspections',
+      'auditEvents'
+    ]) {
       assert.deepEqual(await storeRows(context, storeName), [], `${storeName} was written for a sparse collection`);
     }
   } finally {
@@ -79,7 +90,18 @@ test('a request failure after entry write is queued aborts every save write', as
       (error) => error && error.name === 'DataCloneError'
     );
 
-    for (const storeName of ['entries', 'mediaAliases', 'provenance', 'auditEvents', 'meta']) {
+    for (const storeName of [
+      'meta',
+      'entries',
+      'media',
+      'mediaAliases',
+      'domainMappings',
+      'usernameMappings',
+      'mediaPlatformMappings',
+      'provenance',
+      'inspections',
+      'auditEvents'
+    ]) {
       assert.deepEqual(await storeRows(context, storeName), [], `${storeName} was not rolled back after a late failure`);
     }
   } finally {
