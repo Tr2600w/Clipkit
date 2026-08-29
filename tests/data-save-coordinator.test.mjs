@@ -64,6 +64,47 @@ test('reusing a request ID returns the committed entry without duplicate writes'
   }
 });
 
+test('idempotent retries reconstruct media, mappings, and the original audit event', async () => {
+  const {context, cleanup} = await saveContext('save-idempotency-references');
+  try {
+    const request = command();
+    request.media = {id: 'media-1', displayName: 'Example Media'};
+    request.mappings = [{
+      id: 'mapping-1',
+      type: 'domain',
+      mediaId: 'media-1',
+      domain: 'example.test'
+    }];
+
+    const first = await context.ClipKitSave.saveEntry(request);
+    const retry = await context.ClipKitSave.saveEntry(request);
+
+    assert.equal(retry.entry.id, first.entry.id);
+    assert.equal(retry.media.id, first.media.id);
+    assert.deepEqual(Array.from(retry.mappings, (mapping) => mapping.id), Array.from(first.mappings, (mapping) => mapping.id));
+    assert.equal(retry.auditEvent.id, first.auditEvent.id);
+    assert.equal((await storeRows(context, 'entries')).length, 1);
+    assert.equal((await storeRows(context, 'media')).length, 1);
+    assert.equal((await storeRows(context, 'domainMappings')).length, 1);
+    assert.equal((await storeRows(context, 'auditEvents')).length, 1);
+
+    const conflicting = command();
+    conflicting.media = {id: 'media-2', displayName: 'Different Media'};
+    conflicting.mappings = [{
+      id: 'mapping-2',
+      type: 'domain',
+      mediaId: 'media-2',
+      domain: 'different.test'
+    }];
+    await assert.rejects(
+      context.ClipKitSave.saveEntry(conflicting),
+      (error) => error.code === 'IDEMPOTENCY_CONFLICT'
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
 test('entry updates increment the persisted revision and reject stale revisions', async () => {
   const {context, cleanup} = await saveContext('save-revisions');
   try {

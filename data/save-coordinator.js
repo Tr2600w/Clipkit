@@ -115,6 +115,48 @@
     }
   }
 
+  function stableStringify(value) {
+    if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+    if (isPlainObject(value)) {
+      return `{${Object.keys(value).sort().map((key) =>
+        `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  function fingerprint(value) {
+    let hash = 2166136261;
+    for (const character of stableStringify(value)) {
+      hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  }
+
+  function referenceList(records) {
+    return records.map((record) => record.id).sort();
+  }
+
+  function requestFingerprint(entry, inputEntry, media, aliases, mappings, provenance, inspection, source) {
+    const entryIdentity = Object.assign({}, entry);
+    delete entryIdentity.id;
+    delete entryIdentity.createdAt;
+    delete entryIdentity.updatedAt;
+    delete entryIdentity.recordVersion;
+    if (inputEntry && inputEntry.id != null && String(inputEntry.id).trim() !== '') {
+      entryIdentity.id = entry.id;
+    }
+    return fingerprint({
+      entry: entryIdentity,
+      mediaId: media ? media.id : null,
+      aliases: referenceList(aliases),
+      mappings: mappings.map((mapping) => ({store: mapping.store, id: mapping.record.id}))
+        .sort((first, second) => `${first.store}:${first.id}`.localeCompare(`${second.store}:${second.id}`)),
+      provenance: referenceList(provenance),
+      inspectionId: inspection ? inspection.id : null,
+      source
+    });
+  }
+
   function prepareSave(command) {
     if (!isPlainObject(command)) throw validationError('command must be an object');
     const entry = normalizeEntry(command.entry);
@@ -134,8 +176,18 @@
       after: entry,
       revision: 1
     });
+    const identity = requestFingerprint(
+      entry,
+      command.entry,
+      media,
+      aliases,
+      mappings,
+      provenance,
+      inspection,
+      source
+    );
 
-    return {requestId, entry, media, aliases, mappings, provenance, inspection, auditEvent};
+    return {requestId, entry, media, aliases, mappings, provenance, inspection, auditEvent, identity};
   }
 
   function putAll(transaction, prepared, receipt) {
@@ -163,31 +215,73 @@
       const meta = transaction.objectStore('meta');
       return db.request(meta.get(receiptKey)).then((receipt) => {
         if (receipt) {
+          if (receipt.identity !== prepared.identity) {
+            transactionError = codedError('IDEMPOTENCY_CONFLICT', 'request ID was reused with different records');
+            transaction.abort();
+            return null;
+          }
+          if (!Array.isArray(receipt.mappings) || receipt.auditEventId == null) {
+            transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt is incomplete');
+            transaction.abort();
+            return null;
+          }
           return db.request(transaction.objectStore('entries').get(receipt.entryId)).then((entry) => {
             if (!entry) {
               transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has no committed entry');
               transaction.abort();
               return null;
             }
-            return db.request(transaction.objectStore('auditEvents').getAll()).then((events) => {
-              const auditEvent = events.find((event) =>
-                event.entityType === 'entry'
-                && event.entityId === entry.id
-                && event.action === 'created'
-                && event.revision === 1
-              );
-              if (!auditEvent) {
-                transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has no committed audit event');
+            if (receipt.mediaId != null && String(receipt.mediaId).trim() === '') {
+              transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has an invalid media reference');
+              transaction.abort();
+              return null;
+            }
+            if (receipt.mappings.some((mapping) =>
+              !mapping || !mappingStores.has(mapping.store) || mapping.id == null || String(mapping.id).trim() === '')) {
+              transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has invalid mapping references');
+              transaction.abort();
+              return null;
+            }
+            const mediaRequest = receipt.mediaId == null
+              ? Promise.resolve(null)
+              : db.request(transaction.objectStore('media').get(receipt.mediaId));
+            return mediaRequest.then((media) => {
+              if (receipt.mediaId != null && !media) {
+                transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has no committed media');
                 transaction.abort();
                 return null;
               }
-              return {entry, mappings: [], auditEvent};
+              const mappingRequests = receipt.mappings.map((mapping) =>
+                db.request(transaction.objectStore(mapping.store).get(mapping.id)));
+              return Promise.all(mappingRequests).then((mappings) => {
+                if (mappings.some((mapping) => !mapping)) {
+                  transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has no committed mapping');
+                  transaction.abort();
+                  return null;
+                }
+                return db.request(transaction.objectStore('auditEvents').get(receipt.auditEventId)).then((auditEvent) => {
+                  if (!auditEvent) {
+                    transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has no committed audit event');
+                    transaction.abort();
+                    return null;
+                  }
+                  return {entry, media: media || undefined, mappings, auditEvent};
+                });
+              });
             });
           });
         }
 
         const committedAt = new Date().toISOString();
-        const receiptRecord = {key: receiptKey, entryId: prepared.entry.id, committedAt};
+        const receiptRecord = {
+          key: receiptKey,
+          entryId: prepared.entry.id,
+          mediaId: prepared.media ? prepared.media.id : null,
+          mappings: prepared.mappings.map((mapping) => ({store: mapping.store, id: mapping.record.id})),
+          auditEventId: prepared.auditEvent.id,
+          identity: prepared.identity,
+          committedAt
+        };
         putAll(transaction, prepared, receiptRecord);
         return {
           entry: prepared.entry,
