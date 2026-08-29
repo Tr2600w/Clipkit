@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import {webcrypto} from 'node:crypto';
 import fs from 'node:fs';
 import test from 'node:test';
+import {TextDecoder} from 'node:util';
 import vm from 'node:vm';
+import {IDBFactory, IDBKeyRange} from 'fake-indexeddb';
 
 function storage(seed={}){
   const data=new Map(Object.entries(seed));
@@ -15,24 +18,38 @@ function storage(seed={}){
 
 function loadApp(extra='',seedLocal={}){
   const noop=()=>{};
+  const bodyChildren=[];
   const element=new Proxy({
     addEventListener:noop,classList:{add:noop,remove:noop,toggle:noop,contains:()=>false},
     style:{},dataset:{},options:[],value:'',checked:false,appendChild:noop,removeChild:noop,
     querySelector:()=>null,querySelectorAll:()=>[],closest:()=>null
   },{get:(target,key)=>key in target?target[key]:noop});
   const document={
-    addEventListener:noop,getElementById:()=>element,querySelector:()=>null,querySelectorAll:()=>[],
-    createElement:()=>element
+    body:{appendChild:child=>bodyChildren.push(child)},addEventListener:noop,
+    getElementById:id=>id==='clipkitRecoveryPanel'?bodyChildren.find(child=>child.id===id)||null:element,
+    querySelector:()=>null,querySelectorAll:()=>[],createElement:()=>new Proxy({
+      addEventListener:noop,classList:{add:noop,remove:noop,toggle:noop,contains:()=>false},
+      style:{},dataset:{},options:[],value:'',checked:false,appendChild:noop,removeChild:noop,
+      querySelector:()=>null,querySelectorAll:()=>[],closest:()=>null
+    },{get:(target,key)=>key in target?target[key]:noop})
   };
+  const indexedDB=new IDBFactory();
   const context={
-    console,URL,Blob,Date,JSON,Map,Set,Math,Number,String,Object,Array,RegExp,TextEncoder,Uint8Array,atob,
+    console,URL,Blob,Date,JSON,Map,Set,Math,Number,String,Object,Array,RegExp,TextEncoder,TextDecoder,
+    Uint8Array,atob,crypto:webcrypto,indexedDB,IDBKeyRange,structuredClone,
     setTimeout,clearTimeout,localStorage:storage(seedLocal),sessionStorage:storage(),document,
     window:{},confirm:()=>false,FileReader:function(){},testAssert:assert
   };
   context.window.window=context.window;
+  context.window.indexedDB=indexedDB;
   vm.createContext(context);
+  for(const script of ['clipkit-db.js','records.js','repository.js','save-coordinator.js','migration.js','legacy-adapter.js']){
+    const dataSource=fs.readFileSync(new URL('../data/'+script,import.meta.url),'utf8');
+    vm.runInContext(dataSource,context,{filename:script});
+  }
   const source=fs.readFileSync(new URL('../app.js',import.meta.url),'utf8');
   vm.runInContext(source+'\n'+extra,context,{filename:'app.js'});
+  return context;
 }
 
 function loadPhase2(extra=''){
@@ -43,18 +60,53 @@ function loadPhase2(extra=''){
     querySelector:()=>null,querySelectorAll:()=>[],closest:()=>null
   },{get:(target,key)=>key in target?target[key]:noop});
   const document={addEventListener:noop,getElementById:()=>element,querySelector:()=>null,querySelectorAll:()=>[],createElement:()=>element};
+  const indexedDB=new IDBFactory();
   const context={
     console,URL,Blob,Date,JSON,Map,Set,Math,Number,String,Object,Array,RegExp,TextEncoder,TextDecoder,
-    Uint8Array,Uint32Array,DataView,atob,setTimeout,clearTimeout,localStorage:storage(),sessionStorage:storage(),
+    Uint8Array,Uint32Array,DataView,atob,setTimeout,clearTimeout,crypto:webcrypto,indexedDB,IDBKeyRange,structuredClone,
+    localStorage:storage(),sessionStorage:storage(),
     document,window:{},confirm:()=>false,FileReader:function(){},testAssert:assert
   };
   context.window.window=context.window;
+  context.window.indexedDB=indexedDB;
   vm.createContext(context);
+  for(const script of ['clipkit-db.js','records.js','repository.js','save-coordinator.js','migration.js','legacy-adapter.js']){
+    const dataSource=fs.readFileSync(new URL('../data/'+script,import.meta.url),'utf8');
+    vm.runInContext(dataSource,context,{filename:script});
+  }
   const app=fs.readFileSync(new URL('../app.js',import.meta.url),'utf8');
   const phase2=fs.readFileSync(new URL('../phase2.js',import.meta.url),'utf8');
   vm.runInContext(app+'\n'+phase2+'\n'+extra,context,{filename:'phase2.js'});
   return context;
 }
+
+test('bootstrap waits for verified migration before hydration and populates the active view',async()=>{
+  const context=loadApp();
+  context.bootstrapOrder=[];
+  context.ClipKitMigration.migrate=async()=>{
+    context.bootstrapOrder.push('migration:start');
+    await Promise.resolve();
+    context.bootstrapOrder.push('migration:verified');
+    return {state:'verified',verification:{ok:true}};
+  };
+  context.ClipKitLegacyAdapter.hydrate=async projectId=>{
+    context.bootstrapOrder.push('hydrate:'+projectId);
+    return {activeProjectId:projectId,projects:[{id:'default',name:'Default'}],entries:[{
+      id:'entry-uuid',date:'2026-08-18',pub:'Bangkok Today',platform:'Website',prValue:150000,status:'draft'
+    }]};
+  };
+  await vm.runInContext('bootstrapClipKit()',context);
+  assert.deepEqual(context.bootstrapOrder,['migration:start','migration:verified','hydrate:default']);
+  vm.runInContext("testAssert.equal(entries[0].id,'entry-uuid')",context);
+});
+
+test('bootstrap rejects migration failure and renders a blocking recovery panel',async()=>{
+  const context=loadApp();
+  context.console={...console,error:()=>{}};
+  context.ClipKitMigration.migrate=async()=>{throw new Error('migration failed');};
+  await assert.rejects(vm.runInContext('bootstrapClipKit()',context),/migration failed/);
+  assert.equal(context.document.getElementById('clipkitRecoveryPanel').role,'alertdialog');
+});
 
 test('Phase 1 core safety and naming rules',()=>{
   loadApp(`

@@ -2674,21 +2674,45 @@ function toast(msg,type){const t=document.getElementById('toast');t.textContent=
 
 
 
-// ── INIT: wrap in DOMContentLoaded so DOM is ready ──
-document.addEventListener('DOMContentLoaded', function(){
+function renderBootstrapRecovery(error){
+  let panel=document.getElementById('clipkitRecoveryPanel');
+  if(!panel){
+    panel=document.createElement('div');
+    panel.id='clipkitRecoveryPanel';
+    panel.role='alertdialog';
+    panel.setAttribute('aria-modal','true');
+    panel.style.cssText='position:fixed;inset:0;z-index:99999;display:grid;place-items:center;padding:24px;background:rgba(15,23,42,.94);color:#e2e8f0;font-family:system-ui,sans-serif';
+    document.body.appendChild(panel);
+  }
+  const message=error&&error.message?error.message:'ไม่สามารถเตรียมฐานข้อมูลได้';
+  panel.innerHTML='<section style="width:min(560px,100%);padding:28px;border:1px solid #ef4444;border-radius:12px;background:#111827;box-shadow:0 24px 80px rgba(0,0,0,.45)">'
+    +'<h1 style="margin:0 0 12px;font-size:20px">ClipKit ต้องกู้คืนฐานข้อมูล</h1>'
+    +'<p style="margin:0 0 18px;line-height:1.6;color:#cbd5e1">การย้ายข้อมูลยังไม่ผ่านการตรวจสอบ จึงหยุดการเปิดรายการเพื่อป้องกันข้อมูลสูญหาย</p>'
+    +'<pre style="white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;border-radius:8px;background:#020617;color:#fca5a5">'+esc(message)+'</pre>'
+    +'<button type="button" onclick="window.location.reload()" style="margin-top:18px;padding:9px 14px;border:0;border-radius:7px;background:#0f766e;color:white;font-weight:700;cursor:pointer">ลองใหม่</button>'
+    +'</section>';
+}
+
+async function bootstrapClipKit(){
   try{
     const legacySecret=safeLS.getItem('ck_gs_secret');
     if(legacySecret&&!safeSession.getItem('ck_gs_secret'))safeSession.setItem('ck_gs_secret',legacySecret);
     safeLS.removeItem('ck_gs_secret');
-    migrateStorage();
-    rebuildDB();
-    const availableProjects=getAllProjects();
-    if(!availableProjects.some(p=>p.id===_activeProj)){
-      _activeProj=DEFAULT_PROJ;safeLS.setItem('ck_active_proj',_activeProj);
+    const migration=await ClipKitMigration.migrate();
+    if(!migration||migration.state!=='verified'||!migration.verification||migration.verification.ok!==true){
+      throw new Error('Migration verification did not complete');
     }
-    // Load active project entries
-    const _initEntries = getProjEntries(_activeProj);
-    _initEntries.forEach(e => entries.push(e));
+    let snapshot=await ClipKitLegacyAdapter.hydrate(_activeProj);
+    const availableProjects=snapshot.projects;
+    if(!availableProjects.some(p=>p.id===_activeProj)){
+      const fallback=availableProjects.find(p=>p.id===DEFAULT_PROJ)||availableProjects[0];
+      _activeProj=fallback?fallback.id:DEFAULT_PROJ;
+      safeLS.setItem('ck_active_proj',_activeProj);
+      if(snapshot.activeProjectId!==_activeProj)snapshot=await ClipKitLegacyAdapter.hydrate(_activeProj);
+    }
+    entries.length=0;
+    snapshot.entries.forEach(entry=>entries.push(entry));
+    rebuildDB();
     updProjBtn();
     updSyncBtn();
     syncPlatOptions();
@@ -2708,5 +2732,12 @@ document.addEventListener('DOMContentLoaded', function(){
     updUmapCount();
   } catch(e){
     console.error('[ClipKit] Init error:', e);
+    renderBootstrapRecovery(e);
+    throw e;
   }
+}
+
+// ── INIT: wrap in DOMContentLoaded so DOM is ready ──
+document.addEventListener('DOMContentLoaded', function(){
+  void bootstrapClipKit().catch(()=>{});
 });
