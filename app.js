@@ -89,6 +89,401 @@ function installLegacySnapshot(snapshot){
   _platformRegistryCache=null;
 }
 
+// Repository-backed application command boundary. Core records never use
+// localStorage after the verified migration has installed the legacy adapter.
+const ClipKitSaveCoordinator=globalThis.ClipKitSaveCoordinator||globalThis.ClipKitSave;
+const CORE_LOCAL_STORAGE_KEYS=new Set(['ck_projects','ck_custom','ck_imported','ck_platform_registry','ck_umap']);
+
+function commandUuid(){return crypto.randomUUID();}
+function commandNow(){return new Date().toISOString();}
+function commandOptions(values,options){
+  const input=values&&typeof values==='object'?values:{};
+  return Object.assign({actor:'user'},options||{},input.actor?{actor:input.actor}:{},
+    input.expectedRevision!==undefined?{expectedRevision:input.expectedRevision}:{},
+    input.idempotencyKey?{idempotencyKey:input.idempotencyKey}:{});
+}
+function commandValidation(fieldErrors){return{ok:false,fieldErrors};}
+function requiredCommandFields(values,fields){
+  const errors={};
+  fields.forEach(field=>{if(values[field]==null||String(values[field]).trim()==='')errors[field]='required';});
+  return errors;
+}
+function requireCommandIdempotency(config,fieldErrors){
+  if(!config.idempotencyKey)fieldErrors.idempotencyKey='required';
+}
+function commandFailure(error){
+  if(error&&error.code==='REVISION_CONFLICT')return{ok:false,conflict:true,error};
+  if(error&&error.code==='IDEMPOTENCY_CONFLICT')return{ok:false,conflict:true,error};
+  return{ok:false,error:error instanceof Error?error:new Error(String(error||'Write failed'))};
+}
+function codedCommandError(code,message,properties){return Object.assign(new Error(message),{code},properties||{});}
+function commandRecordIdentity(value){
+  if(Array.isArray(value))return'['+value.map(commandRecordIdentity).join(',')+']';
+  if(value&&typeof value==='object')return'{'+Object.keys(value).sort().map(key=>JSON.stringify(key)+':'+commandRecordIdentity(value[key])).join(',')+'}';
+  return JSON.stringify(value);
+}
+function applyCommittedSnapshot(snapshot){
+  installLegacySnapshot(snapshot);
+  if(String(snapshot.activeProjectId)===String(_activeProj)){
+    entries.length=0;
+    (snapshot.entries||[]).forEach(entry=>entries.push(entry));
+  }
+  rebuildDB();
+}
+async function commitThenRefresh(write,activeProjectId=_activeProj){
+  let committed;
+  const snapshot=await ClipKitLegacyAdapter.refreshAfter(async()=>{committed=await write();return committed;},activeProjectId);
+  applyCommittedSnapshot(snapshot);
+  return committed;
+}
+function canonicalProject(values,current){
+  const now=commandNow();
+  const source=current||{};
+  const settings=Object.assign({},source.settings||{},values.settings||{});
+  if(values.filePattern!==undefined)settings.filePattern=values.filePattern;
+  return{
+    id:String(values.id||source.id||commandUuid()),
+    name:String(values.name!==undefined?values.name:source.name||''),
+    clientName:String(values.clientName!==undefined?values.clientName:source.clientName||values.name||source.name||''),
+    settings,
+    resolverConfigRef:values.resolverConfigRef!==undefined?values.resolverConfigRef:(source.resolverConfigRef||null),
+    clientLogoAssetId:values.clientLogoAssetId!==undefined?values.clientLogoAssetId:(source.clientLogoAssetId||null),
+    agencyLogoAssetId:values.agencyLogoAssetId!==undefined?values.agencyLogoAssetId:(source.agencyLogoAssetId||null),
+    createdAt:source.createdAt||values.createdAt||now,updatedAt:now,deletedAt:source.deletedAt||null,
+    recordVersion:source.recordVersion?source.recordVersion+1:1
+  };
+}
+function canonicalMedia(values,current){
+  const now=commandNow(),source=current||{};
+  const publication=String(values.publication!==undefined?values.publication:(values.name!==undefined?values.name:(source.publication||source.name||''))).trim();
+  return Object.assign({},source,values,{
+    id:String(values.id||source.id||commandUuid()),publication,
+    name:String(values.name!==undefined?values.name:publication),
+    sourceKey:String(values.sourceKey!==undefined?values.sourceKey:(source.sourceKey||publication)),
+    source:String(values.source!==undefined?values.source:(source.source||'custom')),
+    createdAt:source.createdAt||values.createdAt||now,updatedAt:now,
+    recordVersion:source.recordVersion?source.recordVersion+1:1
+  });
+}
+function canonicalPlatform(values,current){
+  const now=commandNow(),source=current||{};
+  return Object.assign({},source,values,{
+    id:String(values.id||source.id||platformId(values.name)||commandUuid()),name:String(values.name!==undefined?values.name:source.name||'').trim(),
+    dbCode:String(values.dbCode!==undefined?values.dbCode:source.dbCode||''),fileCode:String(values.fileCode!==undefined?values.fileCode:source.fileCode||''),
+    builtin:values.builtin!==undefined?values.builtin===true:source.builtin===true,active:values.active!==undefined?values.active!==false:source.active!==false,
+    aliases:Array.from(new Set([...(source.aliases||[]),...(values.aliases||[])])),
+    createdAt:source.createdAt||values.createdAt||now,updatedAt:now,recordVersion:source.recordVersion?source.recordVersion+1:1
+  });
+}
+async function transactionalRecordWrite(type,storeName,values,options,buildRecord){
+  const config=commandOptions(values,options);
+  if(!config.idempotencyKey)throw codedCommandError('VALIDATION_FAILED','idempotencyKey is required');
+  const receiptKey='command:'+type+':'+config.idempotencyKey;
+  const identity=commandRecordIdentity({values,actor:config.actor,expectedRevision:config.expectedRevision});
+  let transactionError;
+  return ClipKitDB.run([storeName,'auditEvents','meta'],'readwrite',transaction=>{
+    const fail=error=>{transactionError=transactionError||error;try{transaction.abort();}catch{}return null;};
+    const store=transaction.objectStore(storeName),meta=transaction.objectStore('meta');
+    return ClipKitDB.request(meta.get(receiptKey)).then(receipt=>{
+      if(receipt){
+        if(receipt.identity!==identity)return fail(codedCommandError('IDEMPOTENCY_CONFLICT','idempotency key was reused with different values'));
+        return ClipKitDB.request(store.get(receipt.recordId)).then(record=>record||fail(codedCommandError('IDEMPOTENCY_CONFLICT','idempotency receipt has no record')));
+      }
+      const id=values.id==null?null:String(values.id);
+      return (id?ClipKitDB.request(store.get(id)):Promise.resolve(null)).then(current=>{
+        if(config.expectedRevision!==undefined&&(!current||current.recordVersion!==config.expectedRevision)){
+          return fail(codedCommandError('REVISION_CONFLICT',type+' revision does not match',{currentRecord:current||null}));
+        }
+        if(config.expectedRevision===undefined&&current){
+          return fail(codedCommandError('REVISION_CONFLICT',type+' already exists',{currentRecord:current}));
+        }
+        const record=buildRecord(values,current);
+        const audit={id:commandUuid(),entityType:type,entityId:record.id,action:current?'updated':'created',source:config.actor,
+          before:current,after:record,revision:record.recordVersion,createdAt:commandNow()};
+        store.put(record);transaction.objectStore('auditEvents').add(audit);
+        meta.put({key:receiptKey,identity,recordId:record.id,committedAt:commandNow()});
+        return record;
+      });
+    }).catch(fail);
+  }).catch(error=>{throw transactionError||error;});
+}
+
+async function createProjectCommand(values={},options={}){
+  const config=commandOptions(values,options);
+  const fieldErrors=requiredCommandFields(values,['name']);
+  requireCommandIdempotency(config,fieldErrors);
+  if(Object.keys(fieldErrors).length)return commandValidation(fieldErrors);
+  try{
+    const record=await commitThenRefresh(()=>transactionalRecordWrite('project','projects',values,config,canonicalProject));
+    return{ok:true,record};
+  }catch(error){return commandFailure(error);}
+}
+async function updateProjectCommand(values={},options={}){
+  const fieldErrors=requiredCommandFields(values,['id']);
+  const config=commandOptions(values,options);
+  requireCommandIdempotency(config,fieldErrors);
+  if(!Number.isInteger(config.expectedRevision)||config.expectedRevision<1)fieldErrors.expectedRevision='required';
+  if(Object.keys(fieldErrors).length)return commandValidation(fieldErrors);
+  try{
+    const record=await commitThenRefresh(()=>transactionalRecordWrite('project','projects',values,config,canonicalProject));
+    return{ok:true,record};
+  }catch(error){return commandFailure(error);}
+}
+async function saveMediaCommand(values={},options={}){
+  const config=commandOptions(values,options);
+  const fieldErrors=requiredCommandFields(values,['publication']);
+  requireCommandIdempotency(config,fieldErrors);
+  if(Object.keys(fieldErrors).length)return commandValidation(fieldErrors);
+  try{
+    const record=await commitThenRefresh(()=>transactionalRecordWrite('media','media',values,config,canonicalMedia));
+    return{ok:true,record};
+  }catch(error){return commandFailure(error);}
+}
+async function savePlatformCommand(values={},options={}){
+  const config=commandOptions(values,options);
+  const fieldErrors=requiredCommandFields(values,['name']);
+  requireCommandIdempotency(config,fieldErrors);
+  if(Object.keys(fieldErrors).length)return commandValidation(fieldErrors);
+  try{
+    const record=await commitThenRefresh(()=>transactionalRecordWrite('platform','platforms',values,config,canonicalPlatform));
+    return{ok:true,record};
+  }catch(error){return commandFailure(error);}
+}
+function mappingConfiguration(values){
+  const type=values.mappingType||values.type||values.store;
+  const configs={
+    alias:{store:'mediaAliases',field:'alias'},mediaAlias:{store:'mediaAliases',field:'alias'},mediaAliases:{store:'mediaAliases',field:'alias'},
+    domain:{store:'domainMappings',field:'domain'},domainMapping:{store:'domainMappings',field:'domain'},domainMappings:{store:'domainMappings',field:'domain'},
+    username:{store:'usernameMappings',field:'username'},usernameMapping:{store:'usernameMappings',field:'username'},usernameMappings:{store:'usernameMappings',field:'username'},
+    mediaPlatform:{store:'mediaPlatformMappings',field:'platformId'},mediaPlatformMapping:{store:'mediaPlatformMappings',field:'platformId'},mediaPlatformMappings:{store:'mediaPlatformMappings',field:'platformId'},
+    logo:{store:'logoMappings',field:'assetId'},logoMapping:{store:'logoMappings',field:'assetId'},logoMappings:{store:'logoMappings',field:'assetId'}
+  };
+  return configs[type]||null;
+}
+async function saveMappingCommand(values={},options={}){
+  const config=commandOptions(values,options);
+  const mapping=mappingConfiguration(values),fieldErrors={};
+  requireCommandIdempotency(config,fieldErrors);
+  if(!mapping)fieldErrors.mappingType='invalid';
+  Object.assign(fieldErrors,requiredCommandFields(values,['mediaId']));
+  if(mapping&&requiredCommandFields(values,[mapping.field])[mapping.field])fieldErrors[mapping.field]='required';
+  if(Object.keys(fieldErrors).length)return commandValidation(fieldErrors);
+  const build=(input,current)=>Object.assign({},current||{},input,{
+    id:String(input.id||(current&&current.id)||commandUuid()),mappingType:input.mappingType||input.type,
+    createdAt:current&&current.createdAt||input.createdAt||commandNow(),updatedAt:commandNow(),recordVersion:current?current.recordVersion+1:1
+  });
+  try{
+    const record=await commitThenRefresh(()=>transactionalRecordWrite('mapping',mapping.store,values,config,build));
+    return{ok:true,record};
+  }catch(error){return commandFailure(error);}
+}
+
+function canonicalEntryInput(values,mediaId){
+  return{
+    id:values.id||commandUuid(),projectId:String(values.projectId||_activeProj),publicationId:String(values.publicationId||mediaId||''),
+    publicationDisplayOverride:values.publicationDisplayOverride||'',platformId:String(values.platformId||''),publishedDate:String(values.publishedDate||values.date||''),
+    publishedAtRaw:values.publishedAtRaw||values.publishedDate||values.date||'',publishedTimezone:values.publishedTimezone||'',
+    urlOriginal:values.urlOriginal!==undefined?values.urlOriginal:(values.url||''),urlCanonical:values.urlCanonical||'',urlDisplay:values.urlDisplay||values.urlOriginal||values.url||'',
+    urlFingerprint:values.urlFingerprint||'',platformContentId:values.platformContentId||'',prValueSnapshot:values.prValueSnapshot!==undefined?values.prValueSnapshot:values.prValue,
+    prSource:values.prSource||'user',duration:values.duration||'',headline:values.headline||'',remark:values.remark||'',workflowStatus:values.workflowStatus||values.status||'draft',
+    logoLockAssetId:values.logoLockAssetId||null,exportOrder:values.exportOrder===undefined?null:values.exportOrder
+  };
+}
+function entryUpdatePatch(values){
+  const mapping={publicationId:'publicationId',publicationDisplayOverride:'publicationDisplayOverride',platformId:'platformId',publishedDate:'publishedDate',date:'publishedDate',
+    publishedAtRaw:'publishedAtRaw',publishedTimezone:'publishedTimezone',urlCanonical:'urlCanonical',urlDisplay:'urlDisplay',urlFingerprint:'urlFingerprint',
+    platformContentId:'platformContentId',prValueSnapshot:'prValueSnapshot',prValue:'prValueSnapshot',prSource:'prSource',duration:'duration',headline:'headline',remark:'remark',
+    workflowStatus:'workflowStatus',status:'workflowStatus',logoLockAssetId:'logoLockAssetId',exportOrder:'exportOrder'};
+  const patch={};Object.entries(mapping).forEach(([source,target])=>{if(values[source]!==undefined)patch[target]=values[source];});return patch;
+}
+function validateEntryUpdatePatch(patch,fieldErrors){
+  ['projectId','publicationId','platformId','publishedDate'].forEach(field=>{
+    if(Object.prototype.hasOwnProperty.call(patch,field)&&(patch[field]==null||String(patch[field]).trim()===''))fieldErrors[field]='required';
+  });
+  if(Object.prototype.hasOwnProperty.call(patch,'workflowStatus')&&!WORK_STATUSES.includes(patch.workflowStatus))fieldErrors.workflowStatus='invalid';
+  if(Object.prototype.hasOwnProperty.call(patch,'prValueSnapshot')&&patch.prValueSnapshot!==null&&patch.prValueSnapshot!==''&&!Number.isFinite(Number(patch.prValueSnapshot))){
+    fieldErrors.prValueSnapshot='invalid';
+  }
+}
+function updateEntryCompound(values,config){
+  if(!config.idempotencyKey)return Promise.reject(codedCommandError('VALIDATION_FAILED','idempotencyKey is required'));
+  const stores=['meta','entries','media','mediaAliases','domainMappings','usernameMappings','mediaPlatformMappings','logoMappings','provenance','inspections','auditEvents'];
+  const receiptKey='command:entry-update:'+config.idempotencyKey,identity=commandRecordIdentity({values,actor:config.actor,expectedRevision:config.expectedRevision});
+  let transactionError;
+  return ClipKitDB.run(stores,'readwrite',transaction=>{
+    const fail=error=>{transactionError=transactionError||error;try{transaction.abort();}catch{}return null;};
+    const entriesStore=transaction.objectStore('entries'),meta=transaction.objectStore('meta');
+    return ClipKitDB.request(meta.get(receiptKey)).then(receipt=>{
+      if(receipt){if(receipt.identity!==identity)return fail(codedCommandError('IDEMPOTENCY_CONFLICT','entry update key was reused'));
+        return ClipKitDB.request(entriesStore.get(receipt.recordId));}
+      return ClipKitDB.request(entriesStore.get(String(values.id))).then(current=>{
+        if(!current||current.recordVersion!==config.expectedRevision)return fail(codedCommandError('REVISION_CONFLICT','entry revision does not match',{currentRecord:current||null}));
+        const media=values.media?canonicalMedia(Object.assign({},values.media,{id:values.media.id||commandUuid()}),null):null;
+        const mediaId=values.publicationId||(media&&media.id)||current.publicationId;
+        const patch=entryUpdatePatch(values);patch.publicationId=mediaId;
+        if(values.urlOriginal!==undefined||values.url!==undefined){const url=values.urlOriginal!==undefined?values.urlOriginal:values.url;patch.urlOriginal=url;patch.urlDisplay=values.urlDisplay!==undefined?values.urlDisplay:url;}
+        let next;
+        try{next=ClipKitRecords.entry(Object.assign({},current,patch,{id:current.id,createdAt:current.createdAt,updatedAt:commandNow(),recordVersion:current.recordVersion+1}));}
+        catch(error){return fail(codedCommandError('VALIDATION_FAILED',error.message));}
+        entriesStore.put(next);if(media)transaction.objectStore('media').put(media);
+        const mappings=(values.mappings||[]).map(mapping=>Object.assign({},mapping,{id:mapping.id||commandUuid(),mediaId:mapping.mediaId||mediaId,
+          type:mapping.type||mapping.mappingType,createdAt:mapping.createdAt||commandNow(),updatedAt:commandNow(),recordVersion:mapping.recordVersion||1}));
+        mappings.forEach(mapping=>{const config=mappingConfiguration(mapping);if(!config)return fail(codedCommandError('VALIDATION_FAILED','mapping type is invalid'));
+          transaction.objectStore(config.store).put(mapping);});
+        (values.provenance||[]).forEach(record=>transaction.objectStore('provenance').put(Object.assign({},record,{id:record.id||commandUuid(),entryId:current.id,
+          createdAt:record.createdAt||commandNow(),updatedAt:commandNow(),recordVersion:record.recordVersion||1})));
+        transaction.objectStore('auditEvents').add({id:commandUuid(),entityType:'entry',entityId:current.id,action:'updated',source:config.actor,
+          before:current,after:next,revision:next.recordVersion,createdAt:commandNow()});
+        meta.put({key:receiptKey,identity,recordId:current.id,committedAt:commandNow()});return next;
+      });
+    }).catch(fail);
+  }).catch(error=>{throw transactionError||error;});
+}
+function createEntryWithLogoMappings(prepared,config){
+  const stores=['meta','entries','media','mediaAliases','domainMappings','usernameMappings','mediaPlatformMappings','logoMappings','provenance','inspections','auditEvents'];
+  const receiptKey='command:entry-create:'+config.idempotencyKey;
+  const identity=commandRecordIdentity({entry:prepared.entry,media:prepared.media,mappings:prepared.mappings,provenance:prepared.provenance,actor:config.actor});
+  let transactionError;
+  return ClipKitDB.run(stores,'readwrite',transaction=>{
+    const fail=error=>{transactionError=transactionError||error;try{transaction.abort();}catch{}return null;};
+    const entriesStore=transaction.objectStore('entries'),meta=transaction.objectStore('meta');
+    return ClipKitDB.request(meta.get(receiptKey)).then(receipt=>{
+      if(receipt){if(receipt.identity!==identity)return fail(codedCommandError('IDEMPOTENCY_CONFLICT','entry create key was reused'));
+        return ClipKitDB.request(entriesStore.get(receipt.recordId)).then(entry=>entry?{entry}:fail(codedCommandError('IDEMPOTENCY_CONFLICT','entry receipt has no record')));}
+      const entry=ClipKitRecords.entry(prepared.entry);entriesStore.put(entry);
+      if(prepared.media)transaction.objectStore('media').put(prepared.media);
+      (prepared.aliases||[]).forEach(alias=>transaction.objectStore('mediaAliases').put(alias));
+      for(const mapping of prepared.mappings){const mappingConfig=mappingConfiguration(mapping);
+        if(!mappingConfig)return fail(codedCommandError('VALIDATION_FAILED','mapping type is invalid'));
+        transaction.objectStore(mappingConfig.store).put(mapping);
+      }
+      (prepared.provenance||[]).forEach(record=>transaction.objectStore('provenance').put(record));
+      if(prepared.inspection)transaction.objectStore('inspections').put(prepared.inspection);
+      const audit={id:commandUuid(),entityType:'entry',entityId:entry.id,action:'created',source:config.actor,
+        before:null,after:entry,revision:entry.recordVersion,createdAt:commandNow()};
+      transaction.objectStore('auditEvents').add(audit);meta.put({key:receiptKey,identity,recordId:entry.id,committedAt:commandNow()});
+      return{entry,media:prepared.media||undefined,mappings:prepared.mappings,auditEvent:audit};
+    }).catch(fail);
+  }).catch(error=>{throw transactionError||error;});
+}
+async function saveEntryCommand(values={},options={}){
+  const config=commandOptions(values,options);
+  if(values.id&&config.expectedRevision!==undefined){
+    const patch=entryUpdatePatch(values),fieldErrors={};
+    requireCommandIdempotency(config,fieldErrors);
+    if(!Number.isInteger(config.expectedRevision)||config.expectedRevision<1)fieldErrors.expectedRevision='required';
+    if(!Object.keys(patch).length&&!values.media&&!(values.mappings||[]).length)fieldErrors.entry='no changes';
+    validateEntryUpdatePatch(patch,fieldErrors);
+    if(Object.keys(fieldErrors).length)return commandValidation(fieldErrors);
+    try{
+      const record=await commitThenRefresh(()=>updateEntryCompound(values,config));
+      return{ok:true,record};
+    }catch(error){return commandFailure(error);}
+  }
+  const mediaValues=values.media||null;
+  const fieldErrors=requiredCommandFields(values,['projectId','platformId']);
+  if(!values.publishedDate&&!values.date)fieldErrors.publishedDate='required';
+  if(!values.publicationId&&!mediaValues&&!values.publication)fieldErrors.publicationId='required';
+  requireCommandIdempotency(config,fieldErrors);
+  if(Object.keys(fieldErrors).length)return commandValidation(fieldErrors);
+  const media=mediaValues?canonicalMedia(Object.assign({},mediaValues,{id:mediaValues.id||commandUuid()}),null):
+    (!values.publicationId&&values.publication?canonicalMedia({publication:values.publication,name:values.publication,platform:values.platform||'',prValue:values.prValueSnapshot,source:'custom'},null):null);
+  const mediaId=values.publicationId||(media&&media.id);
+  const entry=canonicalEntryInput(values,mediaId);
+  const sourceMappings=[...(values.mappings||[])];if(values.logoMapping)sourceMappings.push(Object.assign({mappingType:'logo'},values.logoMapping));
+  const mappings=sourceMappings.map(mapping=>Object.assign({},mapping,{id:mapping.id||commandUuid(),mediaId:mapping.mediaId||mediaId,
+    type:mapping.type||mapping.mappingType,createdAt:mapping.createdAt||commandNow(),updatedAt:commandNow(),recordVersion:mapping.recordVersion||1}));
+  const provenance=(values.provenance||[]).map(record=>Object.assign({},record,{id:record.id||commandUuid(),entryId:record.entryId||entry.id,
+    createdAt:record.createdAt||commandNow(),updatedAt:record.updatedAt||commandNow(),recordVersion:record.recordVersion||1}));
+  try{
+    const prepared={requestId:config.idempotencyKey,entry,media,aliases:values.aliases||[],mappings,provenance,inspection:values.inspection||null,source:config.actor};
+    const hasLogoMapping=mappings.some(mapping=>{const mappingConfig=mappingConfiguration(mapping);return mappingConfig&&mappingConfig.store==='logoMappings';});
+    const saved=await commitThenRefresh(()=>hasLogoMapping?createEntryWithLogoMappings(prepared,config):ClipKitSaveCoordinator.saveEntry(prepared));
+    return{ok:true,record:saved.entry};
+  }catch(error){return commandFailure(error);}
+}
+
+async function mergeMediaCommand(input={}){
+  const values=input||{},fieldErrors=requiredCommandFields(values,['primaryMediaId']);
+  if(!Array.isArray(values.duplicateMediaIds)||!values.duplicateMediaIds.length)fieldErrors.duplicateMediaIds='required';
+  if(!values.expectedRevisions||typeof values.expectedRevisions!=='object')fieldErrors.expectedRevisions='required';
+  if(values.confirmed!==true)fieldErrors.confirmed='required';
+  if(!values.idempotencyKey)fieldErrors.idempotencyKey='required';
+  if(Object.keys(fieldErrors).length)return commandValidation(fieldErrors);
+  const primaryId=String(values.primaryMediaId),duplicateIds=Array.from(new Set(values.duplicateMediaIds.map(String))).filter(id=>id!==primaryId);
+  if(!duplicateIds.length)return commandValidation({duplicateMediaIds:'required'});
+  const stores=['meta','entries','media','mediaAliases','domainMappings','usernameMappings','mediaPlatformMappings','logoMappings','auditEvents'];
+  let transactionError;
+  try{
+    const record=await commitThenRefresh(()=>ClipKitDB.run(stores,'readwrite',transaction=>{
+      const fail=error=>{transactionError=transactionError||error;try{transaction.abort();}catch{}return null;};
+      const mediaStore=transaction.objectStore('media'),meta=transaction.objectStore('meta'),receiptKey='command:media-merge:'+values.idempotencyKey;
+      const identity=commandRecordIdentity({primaryId,duplicateIds,expectedRevisions:values.expectedRevisions});
+      return ClipKitDB.request(meta.get(receiptKey)).then(receipt=>{
+        if(receipt){if(receipt.identity!==identity)return fail(codedCommandError('IDEMPOTENCY_CONFLICT','merge key was reused'));
+          return ClipKitDB.request(mediaStore.get(primaryId));}
+        return Promise.all([primaryId,...duplicateIds].map(id=>ClipKitDB.request(mediaStore.get(id)))).then(mediaRecords=>{
+          for(let index=0;index<mediaRecords.length;index+=1){const id=[primaryId,...duplicateIds][index],media=mediaRecords[index];
+            if(!media||media.recordVersion!==values.expectedRevisions[id])return fail(codedCommandError('REVISION_CONFLICT','media revision does not match',{currentRecord:media||null}));}
+          const primary=mediaRecords[0],duplicates=mediaRecords.slice(1),now=commandNow();
+          const storeNames=['entries','mediaAliases','domainMappings','usernameMappings','mediaPlatformMappings','logoMappings'];
+          return Promise.all(storeNames.map(name=>ClipKitDB.request(transaction.objectStore(name).getAll()))).then(allRows=>{
+            const [entryRows,aliasRows,domainRows,usernameRows,mediaPlatformRows,logoRows]=allRows;
+            entryRows.filter(row=>duplicateIds.includes(String(row.publicationId))).forEach(row=>transaction.objectStore('entries').put(Object.assign({},row,{publicationId:primaryId,updatedAt:now,recordVersion:(row.recordVersion||0)+1})));
+            const aliases=new Set([...(primary.aliases||[])]);duplicates.forEach(row=>[row.publication,row.name,row.sourceKey].filter(Boolean).forEach(value=>aliases.add(String(value))));
+            aliasRows.filter(row=>duplicateIds.includes(String(row.mediaId))).forEach(row=>{aliases.add(String(row.alias||row.name||''));transaction.objectStore('mediaAliases').put(Object.assign({},row,{mediaId:primaryId,updatedAt:now,recordVersion:(row.recordVersion||0)+1}));});
+            domainRows.filter(row=>duplicateIds.includes(String(row.mediaId))&&row.domain).forEach(row=>aliases.add(String(row.domain)));
+            usernameRows.filter(row=>duplicateIds.includes(String(row.mediaId))&&row.username).forEach(row=>aliases.add(String(row.username)));
+            for(const alias of aliases){if(!alias)continue;const id='merge-alias:'+primaryId+':'+alias;transaction.objectStore('mediaAliases').put({id,mediaId:primaryId,alias,source:'merge',createdAt:now,updatedAt:now,recordVersion:1});}
+            [domainRows,usernameRows,mediaPlatformRows,logoRows].forEach((rows,index)=>{const name=['domainMappings','usernameMappings','mediaPlatformMappings','logoMappings'][index];
+              rows.filter(row=>duplicateIds.includes(String(row.mediaId))).forEach(row=>transaction.objectStore(name).put(Object.assign({},row,{mediaId:primaryId,updatedAt:now,recordVersion:(row.recordVersion||0)+1})));});
+            const nextPrimary=Object.assign({},primary,{aliases:Array.from(aliases),redirectIds:Array.from(new Set([...(primary.redirectIds||[]),...duplicateIds])),updatedAt:now,recordVersion:primary.recordVersion+1});
+            mediaStore.put(nextPrimary);duplicates.forEach(row=>mediaStore.put(Object.assign({},row,{redirectToMediaId:primaryId,updatedAt:now,recordVersion:row.recordVersion+1})));
+            transaction.objectStore('auditEvents').add({id:commandUuid(),entityType:'media',entityId:primaryId,action:'merged',source:values.actor||'user',before:{primary,duplicates},after:nextPrimary,revision:nextPrimary.recordVersion,createdAt:now});
+            meta.put({key:receiptKey,identity,recordId:primaryId,committedAt:now});return nextPrimary;
+          });
+        });
+      }).catch(fail);
+    }).catch(error=>{throw transactionError||error;}));
+    return{ok:true,record};
+  }catch(error){return commandFailure(error);}
+}
+
+const pendingActions=new Map();
+const retryIdempotencyKeys=new Map();
+function actionIdempotencyKey(action){
+  if(!retryIdempotencyKeys.has(action))retryIdempotencyKeys.set(action,commandUuid());
+  return retryIdempotencyKeys.get(action);
+}
+async function runSubmittedAction(action,button,submit){
+  if(pendingActions.has(action))return pendingActions.get(action);
+  const target=button&&typeof button==='object'?button:null;
+  const wasDisabled=target?target.disabled:false;
+  if(target)target.disabled=true;
+  const promise=(async()=>{
+    try{
+      const result=await submit(actionIdempotencyKey(action));
+      if(result&&result.ok)retryIdempotencyKeys.delete(action);
+      return result;
+    }finally{
+      if(target)target.disabled=wasDisabled;
+      pendingActions.delete(action);
+    }
+  })();
+  pendingActions.set(action,promise);
+  return promise;
+}
+function adapterRecord(storeName,id){return ClipKitLegacyAdapter.getRecord?ClipKitLegacyAdapter.getRecord(storeName,id):null;}
+function adapterRecords(storeName){return ClipKitLegacyAdapter.getRecords?ClipKitLegacyAdapter.getRecords(storeName):[];}
+function mediaRecordFor(publication,platform){
+  const pub=String(publication||'').trim().toLowerCase(),plat=String(platform||'').trim().toLowerCase();
+  return adapterRecords('media').find(record=>{
+    const name=String(record.publication||record.name||'').trim().toLowerCase();
+    const mediaPlatform=String(record.platform||'').trim().toLowerCase();
+    return name===pub&&(!mediaPlatform||!plat||normPlatform(mediaPlatform).toLowerCase()===normPlatform(plat).toLowerCase());
+  })||null;
+}
+
 function platformId(name){
   const base=String(name||'platform').trim().toLowerCase().replace(/[^a-z0-9ก-๙]+/g,'-').replace(/^-|-$/g,'');
   return base||('platform-'+Date.now());
@@ -114,8 +509,8 @@ function getPlatformRegistry(){
   return _platformRegistryCache;
 }
 function savePlatformRegistry(registry){
+  if(_legacyHydratedState)return;
   _platformRegistryCache=registry.map(normalizePlatformRecord).filter(p=>p.name);
-  if(_legacyHydratedState)_legacyHydratedState.platforms=cloneLegacyValue(_platformRegistryCache);
   safeLS.setItem(PLATFORM_REGISTRY_KEY,JSON.stringify(_platformRegistryCache));
 }
 function getPlatformDefinition(value){
@@ -136,17 +531,18 @@ const STRIP_TLDS=['.co.th','.com.th','.or.th','.in.th','.ac.th','.go.th','.mi.th
 
 // ═══ STORAGE ═══
 function getCustom(){if(_legacyHydratedState)return cloneLegacyValue(_legacyHydratedState.mediaRows.filter(row=>row._src==='custom'));const v=readJSON('ck_custom',[]);return Array.isArray(v)?v:[];}
-function saveCustom(a){if(_legacyHydratedState)_legacyHydratedState.mediaRows=[..._legacyHydratedState.mediaRows.filter(row=>row._src!=='custom'),...cloneLegacyValue(a).map(row=>({...row,_src:'custom'}))];safeLS.setItem('ck_custom',JSON.stringify(a));}
+function saveCustom(a){if(_legacyHydratedState)return;safeLS.setItem('ck_custom',JSON.stringify(a));}
 function getImported(){if(_legacyHydratedState)return cloneLegacyValue(_legacyHydratedState.mediaRows.filter(row=>row._src==='imported'));const v=readJSON('ck_imported',[]);return Array.isArray(v)?v:[];}
-function saveImported(a){if(_legacyHydratedState)_legacyHydratedState.mediaRows=[..._legacyHydratedState.mediaRows.filter(row=>row._src!=='imported'),...cloneLegacyValue(a).map(row=>({...row,_src:'imported'}))];safeLS.setItem('ck_imported',JSON.stringify(a));}
+function saveImported(a){if(_legacyHydratedState)return;safeLS.setItem('ck_imported',JSON.stringify(a));}
 function getUsernameMap(){if(_legacyHydratedState)return cloneLegacyValue(_legacyHydratedState.usernameMap);const v=readJSON('ck_umap',{});return v&&typeof v==='object'&&!Array.isArray(v)?v:{};}
-function saveUsernameMap(m){if(_legacyHydratedState)_legacyHydratedState.usernameMap=cloneLegacyValue(m);safeLS.setItem('ck_umap',JSON.stringify(m));}
+function saveUsernameMap(m){if(_legacyHydratedState)return;safeLS.setItem('ck_umap',JSON.stringify(m));}
 
-function addUsernameMapping(username,platform,pub){
-  if(!username||!pub)return;
-  const m=getUsernameMap();
-  m[platform.toLowerCase()+':'+username.toLowerCase()]={username,platform,pub};
-  saveUsernameMap(m);
+async function addUsernameMapping(username,platform,pub,idempotencyKey=commandUuid()){
+  if(!username||!pub)return commandValidation({username:'required',publication:'required'});
+  const media=mediaRecordFor(pub,platform),platformRecord=getPlatformDefinition(platform);
+  if(!media)return commandValidation({mediaId:'required'});
+  return saveMappingCommand({mappingType:'username',username,platformId:platformRecord?platformRecord.id:platform,mediaId:media.id,publication:pub},
+    {actor:'user',idempotencyKey});
 }
 function lookupUsername(username,platform){
   if(!username)return null;
@@ -157,10 +553,12 @@ function lookupUsername(username,platform){
   return any?any.pub:null;
 }
 function getUsernameMappings(){return Object.values(getUsernameMap());}
-function delUsernameMapping(username,platform){
-  const m=getUsernameMap();
-  delete m[platform.toLowerCase()+':'+username.toLowerCase()];
-  saveUsernameMap(m);
+async function delUsernameMapping(username,platform,idempotencyKey=commandUuid()){
+  const platformRecord=getPlatformDefinition(platform);
+  const current=adapterRecords('usernameMappings').find(record=>String(record.username).toLowerCase()===String(username).toLowerCase()&&
+    String(record.platformId).toLowerCase()===String(platformRecord?platformRecord.id:platform).toLowerCase()&&record.deletedAt==null);
+  if(!current)return commandValidation({mapping:'not found'});
+  return saveMappingCommand({...current,mappingType:'username',deletedAt:commandNow()},{actor:'user',expectedRevision:current.recordVersion,idempotencyKey});
 }
 
 // ═══ DB ═══
@@ -227,7 +625,7 @@ function getAllProjects(){
 }
 
 function saveProjectList(list){
-  if(_legacyHydratedState)_legacyHydratedState.projects=cloneLegacyValue(list);
+  if(_legacyHydratedState)return;
   safeLS.setItem('ck_projects', JSON.stringify(list));
 }
 
@@ -238,7 +636,7 @@ function getProjEntries(pid){
 }
 
 function saveProjEntries(pid, arr){
-  if(_legacyHydratedState&&String(pid)===String(_legacyHydratedState.activeProjectId))_legacyHydratedState.entries=cloneLegacyValue(arr.map(normalizeEntry));
+  if(_legacyHydratedState)return;
   safeLS.setItem(projKey(pid), JSON.stringify(arr.map(normalizeEntry)));
 }
 
@@ -258,8 +656,6 @@ async function switchProject(pid, force){
     installLegacySnapshot(snapshot);
     loaded=snapshot.entries;
   }else{
-    // Save current entries to current project first
-    saveProjEntries(_activeProj, entries);
     loaded=getProjEntries(pid);
   }
   _activeProj = pid;
@@ -281,12 +677,12 @@ async function createProject(){
   const inp = document.getElementById('projNewName');
   const name = (inp.value||'').trim();
   if(!name){ toast('กรอกชื่อโปรเจกต์','err'); return; }
-  const id = 'proj_' + Date.now();
-  const list = getAllProjects();
-  list.push({id,name,clientName:name,filePattern:DEFAULT_FILE_PATTERN,created:new Date().toISOString().slice(0,10),count:0});
-  saveProjectList(list);
+  const button=document.activeElement;
+  const result=await runSubmittedAction('create-project',button,key=>createProjectCommand({name,clientName:name,filePattern:DEFAULT_FILE_PATTERN},{actor:'user',idempotencyKey:key}));
+  if(!result||!result.ok){toast(result&&result.fieldErrors?'กรอกชื่อโปรเจกต์':'สร้างโปรเจกต์ไม่สำเร็จ','err');return result;}
+  const id=result.record.id;
   inp.value = '';
-  switchProject(id);
+  await switchProject(id);
   renderProjList();
   toast('✓ สร้าง "'+name+'"','ok');
   // Auto-register + create Sheet on Sheets backend (if connected)
@@ -299,26 +695,16 @@ async function createProject(){
       console.warn('newProj call failed:', e.message);
     }
   }
+  return result;
 }
 
 async function deleteProject(pid, e){
   e.stopPropagation();
   if(pid === DEFAULT_PROJ){ toast('ลบ Default ไม่ได้','err'); return; }
-  const list = getAllProjects();
-  const proj = list.find(p=>p.id===pid);
+  const proj = getAllProjects().find(p=>p.id===pid);
   if(!proj) return;
-  if(!confirm('ลบโปรเจกต์ "'+proj.name+'" และข้อมูลทั้งหมด?')) return;
-  const newList = list.filter(p=>p.id!==pid);
-  saveProjectList(newList);
-  safeLS.removeItem(projKey(pid));
-  if(_activeProj === pid) switchProject(DEFAULT_PROJ, true);
-  else renderProjList();
-  toast('ลบ "'+proj.name+'" แล้ว','ok');
-  // Delete Sheet on backend (if connected)
-  if(isConnected()){
-    try{ await gsCall('delProj', pid, {}); }
-    catch(e){ console.warn('delProj call failed:', e.message); }
-  }
+  toast('การลบ Project จะเปิดใช้พร้อมระบบถังขยะ','info');
+  return{ok:false,error:new Error('Project lifecycle is not available until Trash is enabled')};
 }
 
 function updProjBtn(){
@@ -665,7 +1051,7 @@ function migratePlatformReferences(oldName,newName){
   const rebuiltMap={};getUsernameMappings().forEach(m=>{const platform=matches(m.platform)?newName:m.platform;rebuiltMap[platform.toLowerCase()+':'+m.username.toLowerCase()]={...m,platform};});saveUsernameMap(rebuiltMap);
   entries.length=0;getProjEntries(_activeProj).forEach(e=>entries.push(e));
 }
-function savePlatformDefinition(){
+async function savePlatformDefinition(){
   const name=(document.getElementById('pmName').value||'').trim();
   const dbCode=(document.getElementById('pmDbCode').value||'').trim();
   const fileCode=(document.getElementById('pmFileCode').value||'').trim();
@@ -673,25 +1059,30 @@ function savePlatformDefinition(){
   const registry=getPlatformRegistry();const current=registry.find(p=>p.id===platformEditingId);
   if(registry.some(p=>p.id!==platformEditingId&&p.name.toLowerCase()===name.toLowerCase())){toast('ชื่อ Platform นี้มีอยู่แล้ว','err');return;}
   if(dbCode&&registry.some(p=>p.id!==platformEditingId&&p.dbCode&&p.dbCode.toLowerCase()===dbCode.toLowerCase())){toast('ตัวย่อ DB นี้ถูกใช้อยู่แล้ว','err');return;}
-  if(current){
-    const oldName=current.name;current.name=name;current.dbCode=dbCode;current.fileCode=fileCode;
-    if(oldName!==name&&!current.aliases.includes(oldName))current.aliases.push(oldName);
-    savePlatformRegistry(registry);migratePlatformReferences(oldName,name);
-  }else{
-    let id=platformId(name),n=2;while(registry.some(p=>p.id===id))id=platformId(name)+'-'+n++;
-    registry.push({id,name,dbCode,fileCode,builtin:false,active:true,aliases:[]});savePlatformRegistry(registry);
-  }
+  const raw=current&&adapterRecord('platforms',current.id);
+  const aliases=current?Array.from(new Set([...(current.aliases||[]),...(current.name!==name?[current.name]:[])])):[];
+  const values={name,dbCode,fileCode,builtin:current?current.builtin:false,active:current?current.active:true,aliases};
+  if(raw)values.id=raw.id;
+  const result=await runSubmittedAction('save-platform:'+(raw?raw.id:name.toLowerCase()),document.activeElement,key=>savePlatformCommand(values,
+    {actor:'user',expectedRevision:raw?raw.recordVersion:undefined,idempotencyKey:key}));
+  if(!result||!result.ok){toast(result&&result.conflict?'Platform ถูกแก้จากอีกหน้าต่าง':'บันทึก Platform ไม่สำเร็จ','err');return result;}
   rebuildDB();syncPlatOptions();renderPlatformRegistry();renderCustomPlatChips();renderTable();renderRecent();resetPlatformForm();
   toast('✓ บันทึก Platform: '+name,'ok');
+  return result;
 }
-function togglePlatform(id){
-  const registry=getPlatformRegistry();const p=registry.find(row=>row.id===id);if(!p)return;
-  p.active=!p.active;savePlatformRegistry(registry);syncPlatOptions();renderPlatformRegistry();renderCustomPlatChips();toast((p.active?'เปิดใช้ ':'ปิดใช้ ')+p.name,'ok');
+async function togglePlatform(id){
+  const raw=adapterRecord('platforms',id);if(!raw)return;
+  const active=raw.active===false;
+  const result=await runSubmittedAction('toggle-platform:'+id,document.activeElement,key=>savePlatformCommand({...raw,active},{actor:'user',expectedRevision:raw.recordVersion,idempotencyKey:key}));
+  if(!result||!result.ok){toast('บันทึก Platform ไม่สำเร็จ','err');return result;}
+  syncPlatOptions();renderPlatformRegistry();renderCustomPlatChips();toast((active?'เปิดใช้ ':'ปิดใช้ ')+raw.name,'ok');return result;
 }
-function deletePlatform(id){
-  const registry=getPlatformRegistry();const p=registry.find(row=>row.id===id);if(!p||p.builtin||platformUsage(p.name)>0)return;
+async function deletePlatform(id){
+  const p=getPlatformRegistry().find(row=>row.id===id),raw=adapterRecord('platforms',id);if(!p||!raw||p.builtin||platformUsage(p.name)>0)return;
   if(!confirm('ลบ Platform "'+p.name+'"?'))return;
-  savePlatformRegistry(registry.filter(row=>row.id!==id));syncPlatOptions();renderPlatformRegistry();renderCustomPlatChips();resetPlatformForm();toast('ลบ '+p.name+' แล้ว','ok');
+  const result=await runSubmittedAction('archive-platform:'+id,document.activeElement,key=>savePlatformCommand({...raw,active:false,deletedAt:commandNow()},{actor:'user',expectedRevision:raw.recordVersion,idempotencyKey:key}));
+  if(!result||!result.ok){toast('ลบ Platform ไม่สำเร็จ','err');return result;}
+  syncPlatOptions();renderPlatformRegistry();renderCustomPlatChips();resetPlatformForm();toast('ลบ '+p.name+' แล้ว','ok');return result;
 }
 function addCustomPlatform(){openPlatformManager();}
 function removeCustomPlatform(name){const p=getPlatformDefinition(name);if(p)togglePlatform(p.id);}
@@ -806,7 +1197,7 @@ function setCfgSt(msg,type){
   el.style.color=type==='ok'?'#065f46':type==='err'?'#991b1b':'var(--text)';
   el.textContent=msg;
 }
-function saveSettings(){
+async function saveSettings(){
   const url=(document.getElementById('cfgUrl').value||'').trim();
   const secret=(document.getElementById('cfgSecret').value||'').trim();
   const sheetUrl=(document.getElementById('cfgSheetUrl').value||'').trim();
@@ -815,17 +1206,21 @@ function saveSettings(){
   if((url&&!secret)||(!url&&secret)){setCfgSt('หากเชื่อม Google Sheets ต้องกรอก URL และ Secret Key ให้ครบ','err');return;}
   if(url&&!safeHttpUrl(url)){setCfgSt('Apps Script URL ต้องเป็น http/https ที่ถูกต้อง','err');return;}
   if(sheetUrl&&!safeHttpUrl(sheetUrl)){setCfgSt('Google Sheet URL ต้องเป็น http/https ที่ถูกต้อง','err');return;}
-  const projects=getAllProjects();
-  const idx=projects.findIndex(p=>p.id===_activeProj);
-  if(idx>=0){projects[idx]={...projects[idx],clientName:projectName,filePattern};saveProjectList(projects);}
-  entries=entries.map(e=>({...e,fileName:buildOutputFileName(e.date,e.pub,e.platform,projects[idx],e.duration),updatedAt:new Date().toISOString()}));
-  saveProjEntries(_activeProj,entries);
+  const current=adapterRecord('projects',_activeProj);
+  if(current){
+    const result=await runSubmittedAction('update-project:'+_activeProj,document.activeElement,key=>updateProjectCommand(
+      {id:_activeProj,clientName:projectName,filePattern},
+      {actor:'user',expectedRevision:current.recordVersion,idempotencyKey:key}
+    ));
+    if(!result||!result.ok){setCfgSt(result&&result.conflict?'Project ถูกแก้จากอีกหน้าต่าง กรุณาลองใหม่':'บันทึก Project ไม่สำเร็จ','err');return result;}
+  }
   if(url){safeLS.setItem('ck_gs_url',url);safeSession.setItem('ck_gs_secret',secret);}
   else{safeLS.removeItem('ck_gs_url');safeSession.removeItem('ck_gs_secret');}
   if(sheetUrl)safeLS.setItem('ck_gs_sheeturl',sheetUrl);else safeLS.removeItem('ck_gs_sheeturl');
   updSyncBtn();toast('✓ บันทึกการตั้งค่าแล้ว','ok');
   renderTable();
   setTimeout(closeSettings,800);
+  return{ok:true};
 }
 function updateFilePatternPreview(){
   const el=document.getElementById('cfgFilePreview');if(!el)return;
@@ -1775,7 +2170,11 @@ function onCapturePaste(event){
 }
 async function persistCaptureImages(){
   await saveCaptureRecord(_activeProj,_captureEntryId,_captureImages);
-  const idx=entries.findIndex(e=>e.id===_captureEntryId);if(idx>=0){entries[idx]={...entries[idx],captureCount:_captureImages.length,capturedAt:_captureImages.length?new Date().toISOString():'',status:_captureImages.length&&(entries[idx].status||'draft')==='draft'?'captured':entries[idx].status,updatedAt:new Date().toISOString()};saveProjEntries(_activeProj,entries);}
+  const current=entryById(_captureEntryId),raw=adapterRecord('entries',_captureEntryId);
+  if(current&&raw&&_captureImages.length&&(current.status||'draft')==='draft'){
+    const result=await saveEntryCommand({id:raw.id,workflowStatus:'captured'},{actor:'user',expectedRevision:raw.recordVersion,idempotencyKey:commandUuid()});
+    if(!result.ok)throw result.error||new Error('บันทึกสถานะ Capture ไม่สำเร็จ');
+  }
   renderCaptureImages();renderTable();updBadge();
 }
 async function removeCaptureImage(id){if(!confirm('ลบภาพนี้ออกจากรายการข่าว?'))return;_captureImages=_captureImages.filter(img=>img.id!==id);await persistCaptureImages();setCaptureStatus('ลบภาพแล้ว','ok');}
@@ -1841,7 +2240,10 @@ async function exportCapturePDF(){
       for(const slice of slices){const canvas=document.createElement('canvas');canvas.width=img.naturalWidth;canvas.height=slice.height;canvas.getContext('2d').drawImage(img,0,slice.y,img.naturalWidth,slice.height,0,0,img.naturalWidth,slice.height);pages.push({dataUrl:canvas.toDataURL('image/jpeg',.9),width:canvas.width,height:canvas.height});}
     }
     downloadLocalBlob(buildImagePDFBlob(pages,pageW,pageH,margin),fileName);
-    const idx=entries.findIndex(e=>e.id===entry.id);entries[idx]={...entries[idx],status:entries[idx].status==='completed'?'completed':'ready',pdfGeneratedAt:new Date().toISOString(),fileName,updatedAt:new Date().toISOString()};saveProjEntries(_activeProj,entries);renderTable();setCaptureStatus('สร้าง '+fileName+' แล้ว','ok');toast('✓ ดาวน์โหลด PDF: '+fileName,'ok');
+    const raw=adapterRecord('entries',entry.id),nextStatus=entry.status==='completed'?'completed':'ready';
+    if(raw){const result=await saveEntryCommand({id:raw.id,workflowStatus:nextStatus},{actor:'user',expectedRevision:raw.recordVersion,idempotencyKey:commandUuid()});
+      if(!result.ok)throw result.error||new Error('บันทึกสถานะ PDF ไม่สำเร็จ');}
+    renderTable();setCaptureStatus('สร้าง '+fileName+' แล้ว','ok');toast('✓ ดาวน์โหลด PDF: '+fileName,'ok');
   }catch(err){setCaptureStatus('สร้าง PDF ไม่สำเร็จ: '+err.message,'err');}
   finally{button.disabled=false;button.textContent='สร้างและดาวน์โหลด PDF';}
 }
@@ -2010,7 +2412,7 @@ function upAuto(){
 }
 
 // ═══ ADD / EDIT ENTRY ═══
-function addEntry(){
+async function addEntry(){
   const pub=(document.getElementById('mPub').value||'').trim()||(document.getElementById('fPub').value||'').trim();
   const plat=(document.getElementById('mPlat').value||'').trim()||getEffPlat();
   const date=document.getElementById('fDate').value||'';
@@ -2035,28 +2437,22 @@ function addEntry(){
   if(manPR&&!isNaN(Number(manPR)))prValue=Number(manPR);
   else{const f=lookupPR(pub,plat);prValue=f?f.value:null;}
   const logoManual=(document.getElementById('logoManual').value||'').trim();
-  const lr=logoManual?{file:logoManual}:findLogoFast(pub);
   const f=lookupPR(pub,plat);
-  const newId=Date.now();
-  const now=new Date().toISOString();
-  entries.push({
-    id:newId,date,url,pub,platform:plat,prValue,
-    duration:plat==='TV'?(document.getElementById('fDuration').value||'').trim():'',
-    fullKey:(f&&f.platform===plat)?f.key:makeDbKey(pub,plat),
-    type:document.getElementById('fType').value||'',
-    headline:(document.getElementById('fHead').value||'').trim(),
-    remark:(document.getElementById('fRemark').value||'').trim(),
-    fileName:buildFN(date,pub,plat),
-    logoFile:lr.file||'',status:document.getElementById('fStatus').value||'draft',createdAt:now,updatedAt:now
-  });
-  const r=parseUrl(url);
-  if(r._username&&pub)addUsernameMapping(r._username,plat,pub);
-  if(url)addUrlToHistory(url,newId,pub,date);
-  saveProjEntries(_activeProj, entries);
+  const existingMedia=mediaRecordFor(pub,plat),platformRecord=getPlatformDefinition(plat),parsed=parseUrl(url),mappings=[];
+  if(parsed._username)mappings.push({mappingType:'username',username:parsed._username,platformId:platformRecord?platformRecord.id:plat});
+  if(url){try{const domain=new URL(url).hostname.toLowerCase().replace(/^www\./,'');if(domain)mappings.push({mappingType:'domain',domain});}catch{}}
+  const values={projectId:_activeProj,publicationId:existingMedia?existingMedia.id:undefined,publication:pub,platformId:platformRecord?platformRecord.id:plat,
+    publishedDate:date,urlOriginal:url,urlDisplay:url,prValueSnapshot:prValue,prSource:manPR?'user':'media',duration:plat==='TV'?(document.getElementById('fDuration').value||'').trim():'',
+    headline:(document.getElementById('fHead').value||'').trim(),remark:(document.getElementById('fRemark').value||'').trim(),workflowStatus:document.getElementById('fStatus').value||'draft',
+    mappings,provenance:[{field:'publicationId',value:pub,source:'user',confirmedByUser:true},{field:'publishedDate',value:date,source:'user',confirmedByUser:true}]};
+  if(!existingMedia)values.media={publication:pub,name:pub,platform:plat,prValue,source:autoSave||manPR?'custom':'entry',sourceKey:(f&&f.platform===plat)?f.key:makeDbKey(pub,plat)};
+  const result=await runSubmittedAction('add-entry',document.activeElement,key=>saveEntryCommand(values,{actor:'user',idempotencyKey:key}));
+  if(!result||!result.ok){toast(result&&result.conflict?'รายการถูกแก้จากอีกหน้าต่าง':'เพิ่มรายการไม่สำเร็จ','err');return result;}
   updBadge();
-  if(manPR&&!isNaN(Number(manPR))&&autoSave){saveToCustom(pub,plat,Number(manPR));renderRecent();toast('✓ เพิ่ม + บันทึก '+pub+' ลง DB','info');}
+  if(manPR&&!isNaN(Number(manPR))&&autoSave){renderRecent();toast('✓ เพิ่ม + บันทึก '+pub+' ลง DB','info');}
   else toast('✓ เพิ่ม: '+pub+' ('+plat+')','ok');
   renderTable();clearForm();
+  return result;
 }
 let _dupHighlightId = null; // currently highlighted dup row
 
@@ -2100,37 +2496,40 @@ function clearDupHighlight(){
   });
   _dupHighlightId = null;
 }
-function dupEntry(id){
+async function dupEntry(id){
   const src=entryById(id);
   if(!src)return;
-  const now=new Date().toISOString();
-  const copy={...src,id:Date.now(),url:'',status:'draft',createdAt:now,updatedAt:now,fileName:buildFN(src.date,src.pub,src.platform)};
-  entries.push(copy);
-  saveProjEntries(_activeProj, entries);
+  const raw=adapterRecord('entries',id);if(!raw)return;
+  const values={...raw,id:undefined,urlOriginal:'',urlCanonical:'',urlDisplay:'',urlFingerprint:'',platformContentId:'',workflowStatus:'draft'};
+  const result=await runSubmittedAction('duplicate-entry:'+id,document.activeElement,key=>saveEntryCommand(values,{actor:'user',idempotencyKey:key}));
+  if(!result||!result.ok){toast('Duplicate ไม่สำเร็จ','err');return result;}
   updBadge();renderTable();
   toast('⧉ Duplicate "'+esc(src.pub)+'" — แก้ Platform/URL ได้เลย','info');
+  return result;
 }
-function saveEdit(id){
+async function saveEdit(id){
   const pub=(document.getElementById('er_pub').value||'').trim();
   const plat=document.getElementById('er_plat').value||'Website';
   const date=document.getElementById('er_date').value||'';
   const url=(document.getElementById('er_url').value||'').trim();
   const prRaw=(document.getElementById('er_pr').value||'').trim();
-  const logoFile=(document.getElementById('er_logo').value||'').trim();
-  const type=(document.getElementById('er_type').value||'').trim();
   const duration=(document.getElementById('er_duration').value||'').trim();
   const status=(document.getElementById('er_status').value||'draft');
   if(!pub){toast('กรุณากรอกชื่อสื่อ','err');return;}
   if(url&&!safeHttpUrl(url)){toast('URL ต้องขึ้นต้นด้วย http:// หรือ https://','err');return;}
   const prValue=prRaw&&!isNaN(Number(prRaw))?Number(prRaw):(()=>{const f=lookupPR(pub,plat);return f?f.value:null;})();
-  const f=lookupPR(pub,plat);
-  const idx=entryIndexById(id);if(idx<0)return;
-  entries[idx]={...entries[idx],pub,platform:plat,date,url,prValue,
-    fullKey:(f&&f.platform===plat)?f.key:makeDbKey(pub,plat),
-    fileName:buildFN(date,pub,plat),
-    logoFile:logoFile||(()=>{const lr=findLogoFast(pub);return lr.file||'';})(),type,duration:plat==='TV'?duration:'',status,updatedAt:new Date().toISOString()};
-  saveProjEntries(_activeProj, entries);
+  const raw=adapterRecord('entries',id);if(!raw)return;
+  const existingMedia=mediaRecordFor(pub,plat),platformRecord=getPlatformDefinition(plat),parsed=parseUrl(url),mappings=[];
+  if(parsed._username)mappings.push({mappingType:'username',username:parsed._username,platformId:platformRecord?platformRecord.id:plat});
+  if(url){try{const domain=new URL(url).hostname.toLowerCase().replace(/^www\./,'');if(domain)mappings.push({mappingType:'domain',domain});}catch{}}
+  const values={id:raw.id,publicationId:existingMedia?existingMedia.id:undefined,publication:pub,platformId:platformRecord?platformRecord.id:plat,publishedDate:date,
+    urlOriginal:url,urlDisplay:url,prValueSnapshot:prValue,duration:plat==='TV'?duration:'',workflowStatus:status,mappings,
+    provenance:[{field:'publicationId',value:pub,source:'user',confirmedByUser:true},{field:'publishedDate',value:date,source:'user',confirmedByUser:true}]};
+  if(!existingMedia)values.media={publication:pub,name:pub,platform:plat,prValue,source:'custom',sourceKey:makeDbKey(pub,plat)};
+  const result=await runSubmittedAction('edit-entry:'+id,document.activeElement,key=>saveEntryCommand(values,{actor:'user',expectedRevision:raw.recordVersion,idempotencyKey:key}));
+  if(!result||!result.ok){toast(result&&result.conflict?'รายการถูกแก้จากอีกหน้าต่าง':'บันทึกไม่สำเร็จ','err');return result;}
   editingRowId=null;updBadge();renderTable();toast('✓ บันทึก: '+pub,'ok');
+  return result;
 }
 function _resetFormFields(){
   ['fPub','fUrl','fHead','fRemark','mPub','mPlat','mPR','mLink','logoManual','fDuration']
@@ -2163,32 +2562,13 @@ function clearForm(){
   upAuto();
 }
 let _undoTimer=null,_undoEntry=null,_undoIdx=-1;
-function delEntry(id){
-  const idx=entryIndexById(id);
-  if(idx<0)return;
-  _undoEntry={...entries[idx]};_undoIdx=idx;
-  if(_undoEntry.url)removeUrlFromHistory(_undoEntry.url);
-  entries.splice(idx,1);
-  saveProjEntries(_activeProj, entries);
-  updBadge();renderTable();
-  // Undo toast
-  clearTimeout(_undoTimer);
-  const t=document.getElementById('toast');
-  t.innerHTML='ลบ "'+esc(_undoEntry.pub)+'" แล้ว &nbsp;<button onclick="undoDelete()" style="background:rgba(255,255,255,.2);border:none;color:inherit;padding:2px 8px;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:12px;font-weight:700">ยกเลิก</button>';
-  t.className='toast info show';
-  _undoTimer=setTimeout(()=>{t.classList.remove('show');t.innerHTML='';_undoEntry=null;},5000);
+async function delEntry(id){
+  if(!entryById(id))return;
+  toast('การลบ Entry จะเปิดใช้พร้อมระบบถังขยะ','info');
+  return{ok:false,error:new Error('Entry lifecycle is not available until Trash is enabled')};
 }
-function undoDelete(){
-  if(!_undoEntry)return;
-  clearTimeout(_undoTimer);
-  entries.splice(_undoIdx,0,_undoEntry);
-  if(_undoEntry.url)addUrlToHistory(_undoEntry.url,_undoEntry.id,_undoEntry.pub,_undoEntry.date);
-  saveProjEntries(_activeProj, entries);
-  updBadge();renderTable();
-  toast('✓ คืนค่า "'+_undoEntry.pub+'" แล้ว','ok');
-  _undoEntry=null;
-}
-function clearAll(){if(!confirm('ลบรายการทั้งหมด?'))return;entries.length=0;saveProjEntries(_activeProj,[]);updBadge();renderTable();}
+function undoDelete(){toast('ไม่มีรายการในถังขยะสำหรับคืนค่า','info');}
+function clearAll(){toast('การลบหลายรายการจะเปิดใช้พร้อมระบบถังขยะ','info');}
 
 // ═══ TABLE ═══
 function platCls(p){const m={'Facebook':'pt-fb','Instagram':'pt-ig','YouTube':'pt-yt','TikTok':'pt-tk','X':'pt-x','Website':'pt-ws','Web':'pt-web','TV':'pt-tv','LINE':'pt-line','LINE TODAY':'pt-line','Lemon8':'pt-l8','Threads':'pt-threads','MSN':'pt-msn'};return m[p]||'pt-def';}
@@ -2480,22 +2860,25 @@ async function exportExcelData(data){
 }
 
 // ═══ QUICK DB ═══
-function saveToCustom(pub,plat,val){
-  plat=normPlatform(plat);const key=makeDbKey(pub,plat);
-  const c=getCustom();const ex=c.findIndex(e=>e.key.toLowerCase()===key.toLowerCase());
-  const entry={key,pub,platform:plat,value:val};
-  if(ex>=0)c[ex]=entry;else c.push(entry);
-  saveCustom(c);rebuildDB();
+async function saveToCustom(pub,plat,val,idempotencyKey=commandUuid()){
+  plat=normPlatform(plat);const current=mediaRecordFor(pub,plat);
+  const values={publication:pub,name:pub,platform:plat,prValue:Number(val),source:'custom',sourceKey:makeDbKey(pub,plat)};
+  if(current)values.id=current.id;
+  const result=await saveMediaCommand(values,{actor:'user',expectedRevision:current?current.recordVersion:undefined,idempotencyKey});
+  if(result.ok)rebuildDB();
+  return result;
 }
-function qAdd(){
+async function qAdd(){
   const pub=(document.getElementById('qPub').value||'').trim();
   const plat=document.getElementById('qPlat').value||'Website';
   const val=parseInt((document.getElementById('qVal').value||'').replace(/,/g,''));
   if(!pub||isNaN(val)||val<=0){toast('กรอกชื่อสื่อและ PR Value','err');return;}
-  saveToCustom(pub,plat,val);
+  const result=await runSubmittedAction('quick-media:'+makeDbKey(pub,plat).toLowerCase(),document.activeElement,key=>saveToCustom(pub,plat,val,key));
+  if(!result||!result.ok){toast('เพิ่มสื่อไม่สำเร็จ','err');return result;}
   document.getElementById('qPub').value='';document.getElementById('qVal').value='';
   renderRecent();toast('✓ เพิ่ม '+pub,'ok');
   syncDBToSheets();
+  return result;
 }
 function renderRecent(){
   const c=[...getCustom(),...getImported()].slice(-8).reverse();
@@ -2517,10 +2900,13 @@ function renderRecent(){
     el.appendChild(div);
   });
 }
-function delCustom(key){
-  saveCustom(getCustom().filter(e=>e.key!==key));
-  saveImported(getImported().filter(e=>e.key!==key));
-  rebuildDB();renderRecent();toast('ลบแล้ว','ok');
+async function delCustom(key){
+  const row=[...getCustom(),...getImported()].find(entry=>entry.key===key),raw=row&&adapterRecord('media',row.id);
+  if(!raw)return;
+  const result=await runSubmittedAction('archive-media:'+raw.id,document.activeElement,idempotencyKey=>saveMediaCommand({...raw,deletedAt:commandNow()},
+    {actor:'user',expectedRevision:raw.recordVersion,idempotencyKey}));
+  if(!result||!result.ok){toast('ลบไม่สำเร็จ','err');return result;}
+  rebuildDB();renderRecent();toast('ลบแล้ว','ok');return result;
 }
 
 // ═══ DB MANAGER ═══
@@ -2576,32 +2962,34 @@ function safeHttpUrl(value){
   try{const u=new URL(String(value||'').trim());return ['http:','https:'].includes(u.protocol)?u.href:'';}
   catch{return '';}
 }
-function dbSaveEdit(oldKey,src){
+async function dbSaveEdit(oldKey,src){
   const pub=(document.getElementById('ei_pub').value||'').trim();
   const plat=document.getElementById('ei_plat').value;
   const val=parseInt(document.getElementById('ei_val').value);
   if(!pub||isNaN(val)||val<=0){toast('กรอกให้ครบ','err');return;}
-  const newKey=makeDbKey(pub,plat);
-  const entry={key:newKey,pub,platform:plat,value:val};
-  if(src==='custom'){const c=getCustom().filter(e=>e.key.toLowerCase()!==oldKey.toLowerCase());c.push(entry);saveCustom(c);}
-  else{const imp=getImported().filter(e=>e.key.toLowerCase()!==oldKey.toLowerCase());imp.push(entry);saveImported(imp);}
+  const existing=[...getCustom(),...getImported()].find(entry=>entry.key.toLowerCase()===oldKey.toLowerCase());
+  const raw=existing&&adapterRecord('media',existing.id);if(!raw){toast('ไม่พบรายการสื่อ','err');return;}
+  const result=await runSubmittedAction('edit-media:'+raw.id,document.activeElement,key=>saveMediaCommand({id:raw.id,publication:pub,name:pub,platform:plat,prValue:val,
+    source:src,sourceKey:makeDbKey(pub,plat)},{actor:'user',expectedRevision:raw.recordVersion,idempotencyKey:key}));
+  if(!result||!result.ok){toast(result&&result.conflict?'สื่อถูกแก้จากอีกหน้าต่าง':'บันทึกไม่สำเร็จ','err');return result;}
   rebuildDB();editingKey=null;renderDB();renderRecent();toast('✓ บันทึก: '+pub,'ok');
+  return result;
 }
-function dbDel(key,src){
+async function dbDel(key,src){
   if(!confirm('ลบ "'+key+'"?'))return;
-  if(src==='custom')saveCustom(getCustom().filter(e=>e.key.toLowerCase()!==key.toLowerCase()));
-  else saveImported(getImported().filter(e=>e.key.toLowerCase()!==key.toLowerCase()));
-  rebuildDB();renderDB();renderRecent();toast('ลบแล้ว','ok');
+  const result=await delCustom(key);if(result&&result.ok){renderDB();renderRecent();}return result;
 }
-function dbAdd(){
+async function dbAdd(){
   const pub=(document.getElementById('dbPub').value||'').trim();
   const plat=document.getElementById('dbPlat').value||'Website';
   const val=parseInt((document.getElementById('dbVal').value||'').replace(/,/g,''));
   if(!pub||isNaN(val)||val<=0){toast('กรอกให้ครบ','err');return;}
-  saveToCustom(pub,plat,val);
+  const result=await runSubmittedAction('db-media:'+makeDbKey(pub,plat).toLowerCase(),document.activeElement,key=>saveToCustom(pub,plat,val,key));
+  if(!result||!result.ok){toast('เพิ่มสื่อไม่สำเร็จ','err');return result;}
   document.getElementById('dbPub').value='';document.getElementById('dbVal').value='';
   renderDB();renderRecent();toast('✓ เพิ่ม '+pub,'ok');
   syncDBToSheets();
+  return result;
 }
 function overrideB(pub,plat,val){
   document.getElementById('dbPub').value=pub;document.getElementById('dbPlat').value=plat;document.getElementById('dbVal').value=val;
@@ -2677,18 +3065,21 @@ function renderUmap(){
     +'<td style="padding:6px 8px;font-weight:600">'+esc(m.pub)+'</td>'
     +'<td style="padding:6px 8px;text-align:right"><button class="sbtn del umap-del-btn" data-username="'+escAttr(m.username)+'" data-plat="'+escAttr(m.platform)+'">ลบ</button></td></tr>').join('');
 }
-function umAdd(){
+async function umAdd(){
   const username=(document.getElementById('umUsername').value||'').trim().replace(/^@/,'');
   const plat=document.getElementById('umPlat').value;
   const pub=(document.getElementById('umPub').value||'').trim();
   if(!username||!pub){toast('กรอก username และชื่อสื่อ','err');return;}
-  addUsernameMapping(username,plat,pub);
+  const result=await runSubmittedAction('username:'+plat.toLowerCase()+':'+username.toLowerCase(),document.activeElement,key=>addUsernameMapping(username,plat,pub,key));
+  if(!result||!result.ok){toast('บันทึก mapping ไม่สำเร็จ','err');return result;}
   document.getElementById('umUsername').value='';document.getElementById('umPub').value='';
-  renderUmap();updUmapCount();toast('✓ จำ @'+username+' → '+pub,'ok');
+  renderUmap();updUmapCount();toast('✓ จำ @'+username+' → '+pub,'ok');return result;
 }
-function delUmap(username,platform){
+async function delUmap(username,platform){
   if(!confirm('ลบ @'+username+'?'))return;
-  delUsernameMapping(username,platform);renderUmap();updUmapCount();toast('ลบแล้ว','ok');
+  const result=await runSubmittedAction('delete-username:'+platform.toLowerCase()+':'+username.toLowerCase(),document.activeElement,key=>delUsernameMapping(username,platform,key));
+  if(!result||!result.ok){toast('ลบ mapping ไม่สำเร็จ','err');return result;}
+  renderUmap();updUmapCount();toast('ลบแล้ว','ok');return result;
 }
 function updUmapCount(){
   const cnt=document.getElementById('umapCount');

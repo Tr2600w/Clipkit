@@ -9,6 +9,7 @@
 
   const DEFAULT_FILE_PATTERN = '{YYMMDD}_{Publication}{PlatformSuffix}.pdf';
   let cache = frozenCache('', [], [], [], [], []);
+  let recordCache = frozenRecordCache({});
 
   function clone(value) {
     if (Array.isArray(value)) return value.map(clone);
@@ -39,6 +40,14 @@
       platforms: freezeRows(platforms),
       usernameMappings: freezeRows(usernameMappings)
     });
+  }
+
+  function frozenRecordCache(stores) {
+    const result = {};
+    for (const [storeName, rows] of Object.entries(stores || {})) {
+      result[storeName] = freezeRows(rows);
+    }
+    return Object.freeze(result);
   }
 
   function readStore(storeName) {
@@ -154,18 +163,18 @@
   }
 
   function getMediaRows() {
-    return cache.media.map(mediaView);
+    return cache.media.filter((record) => record.deletedAt == null && !record.redirectToMediaId).map(mediaView);
   }
 
   function getPlatforms() {
-    return cache.platforms.map(platformView);
+    return cache.platforms.filter((record) => record.deletedAt == null).map(platformView);
   }
 
   function getUsernameMap() {
     const platforms = new Map(cache.platforms.map((row) => [row.id, row]));
     const media = new Map(cache.media.map((row) => [row.id, row]));
     const result = {};
-    for (const record of cache.usernameMappings) {
+    for (const record of cache.usernameMappings.filter((row) => row.deletedAt == null)) {
       const platform = platforms.get(record.platformId);
       const publication = media.get(record.mediaId);
       const platformName = (platform && platform.name) || record.platformId || '';
@@ -177,15 +186,40 @@
     return result;
   }
 
+  function getRecords(storeName) {
+    return (recordCache[storeName] || []).map(clone);
+  }
+
+  function getRecord(storeName, id) {
+    const record = (recordCache[storeName] || []).find((row) => String(row.id) === String(id));
+    return record ? clone(record) : null;
+  }
+
   async function hydrate(activeProjectId) {
-    const [projects, entries, media, platforms, usernameMappings] = await Promise.all([
+    const [projects, entries, media, platforms, usernameMappings, mediaAliases, domainMappings,
+      mediaPlatformMappings, logoMappings] = await Promise.all([
       repository.projects.getAll(),
       repository.entries.listByProject(activeProjectId, {includeDeleted: false}),
       repository.media.getAll(),
       readStore('platforms'),
-      readStore('usernameMappings')
+      readStore('usernameMappings'),
+      readStore('mediaAliases'),
+      readStore('domainMappings'),
+      readStore('mediaPlatformMappings'),
+      readStore('logoMappings')
     ]);
     cache = frozenCache(String(activeProjectId), projects, entries, media, platforms, usernameMappings);
+    recordCache = frozenRecordCache({
+      projects,
+      entries,
+      media,
+      platforms,
+      usernameMappings,
+      mediaAliases,
+      domainMappings,
+      mediaPlatformMappings,
+      logoMappings
+    });
     return {
       activeProjectId: cache.activeProjectId,
       projects: getProjects(),
@@ -209,6 +243,8 @@
     getEntries,
     getMediaRows,
     getPlatforms,
-    getUsernameMap
+    getUsernameMap,
+    getRecord,
+    getRecords
   };
 }(globalThis));

@@ -162,11 +162,17 @@ test('rendered migrated UUID actions remain callable across row, Capture, PDF, a
     testAssert.match(html,new RegExp('dupEntry\\\\(&quot;'+testEntryId+'&quot;\\\\)'));
     testAssert.match(html,new RegExp('delEntry\\\\(&quot;'+testEntryId+'&quot;\\\\)'));
     testAssert.match(html,new RegExp('editingRowId=&quot;'+testEntryId+'&quot;'));
-    dupEntry(testEntryId);
+    let duplicateCommandCalls=0;
+    ClipKitLegacyAdapter.getRecord=(store,id)=>store==='entries'&&id===testEntryId?{
+      id,projectId:'default',publicationId:'media-uuid',platformId:'website',publishedDate:'2026-08-18',
+      workflowStatus:'draft',recordVersion:1
+    }:null;
+    saveEntryCommand=async()=>{duplicateCommandCalls++;entries.push({id:'duplicate-uuid',date:'2026-08-18',pub:'UUID News',platform:'Website',prValue:150000,status:'draft'});return{ok:true,record:{id:'duplicate-uuid'}};};
+    await dupEntry(testEntryId);
+    testAssert.equal(duplicateCommandCalls,1);
     testAssert.equal(entries.length,2);
-    delEntry(testEntryId);
-    testAssert.equal(entries.some(entry=>entry.id===testEntryId),false);
-    entries.unshift({id:testEntryId,date:'2026-08-18',pub:'UUID News',platform:'Website',prValue:150000,status:'draft',captureCount:0});
+    await delEntry(testEntryId);
+    testAssert.equal(entries.some(entry=>entry.id===testEntryId),true);
     await openCapture(testEntryId);
     testAssert.equal(_captureEntryId,testEntryId);
     await openPdfPreview(testEntryId);
@@ -310,7 +316,7 @@ test('Phase 2 Letter naming and logo identities follow the Platform Registry',()
     testAssert.equal(P2_LINK_FONT,'400 7.8px Arial,sans-serif');
     testAssert.equal(p2DpiForQuality('standard'),150);
     testAssert.equal(p2DpiForQuality('high'),300);
-    testAssert.deepEqual(p2Transform(),{cropLeft:0,cropRight:0,cropTop:0,cropBottom:0,rotation:0,breakRatios:[],scalePercent:100,align:'center',cutVersion:0,manualCuts:[]});
+    testAssert.deepEqual(p2Transform(),{cropLeft:0,cropRight:0,cropTop:0,cropBottom:0,rotation:0,breakRatios:[],scalePercent:100,align:'center',firstPageOffsetPt:0,cutVersion:0,manualCuts:[]});
     testAssert.equal('dataUrl' in p2Transform({id:'legacy',dataUrl:'data:image/png;base64,x'}),false);
     testAssert.deepEqual(p2Transform({breakRatios:[.5]}).manualCuts,[]);
     testAssert.deepEqual(p2Transform({cutVersion:2,manualCuts:[.7,.3]}).manualCuts,[.3,.7]);
@@ -319,6 +325,8 @@ test('Phase 2 Letter naming and logo identities follow the Platform Registry',()
     testAssert.equal(p2Transform({scalePercent:10,align:'free'}).scalePercent,25);
     testAssert.equal(p2Transform({scalePercent:120,align:'right'}).scalePercent,100);
     testAssert.equal(p2Transform({scalePercent:75}).align,'center');
+    testAssert.equal(p2Transform({firstPageOffsetPt:24}).firstPageOffsetPt,24);
+    testAssert.equal(p2Transform({firstPageOffsetPt:999}).firstPageOffsetPt,200);
     testAssert.equal(p2DrawWidthPt({width:2000},P2_LETTER,{scalePercent:100}),500);
     testAssert.equal(p2DrawWidthPt({width:2000},P2_LETTER,{scalePercent:75}),375);
     testAssert.equal(p2DrawWidthPt({width:2000},P2_LETTER,{scalePercent:50}),250);
@@ -335,6 +343,8 @@ test('Phase 2 Letter naming and logo identities follow the Platform Registry',()
     testAssert.equal(drawArgs[5],181);
     testAssert.equal(drawArgs[6],184);
     testAssert.equal(drawArgs[7],375);
+    p2DrawSegment({drawImage(...args){drawArgs=args;}},{width:2000},{y:0,height:800},true,1,P2_LETTER,{scalePercent:75,align:'right',firstPageOffsetPt:24});
+    testAssert.equal(drawArgs[6],208);
     const segmentCanvas={width:1200,height:2400,getContext(){return{getImageData(){throw new Error('no pixels');}}}};
     testAssert.equal(p2AutoSegments(segmentCanvas,true,P2_LETTER,{scalePercent:50}).length<p2AutoSegments(segmentCanvas,true,P2_LETTER,{scalePercent:100}).length,true);
     const fitsFirst={width:1200,height:1000,getContext(){return{getImageData(){throw new Error('no pixels');}}}};
@@ -343,6 +353,9 @@ test('Phase 2 Letter naming and logo identities follow the Platform Registry',()
     const tinyPages=p2PageSegments(tinyTail,[],true,P2_LETTER,{scalePercent:100});
     testAssert.equal(tinyPages.length,2);
     testAssert.equal(tinyPages[1].height*500/1200<=P2_LETTER.content.nextH*.12,true);
+    const offsetPages=p2PageSegments(fitsFirst,[],true,P2_LETTER,{scalePercent:100,firstPageOffsetPt:24});
+    testAssert.equal(offsetPages.length,2);
+    testAssert.equal(offsetPages[0].capacityPt,406);
     const manualPages=p2PageSegments(segmentCanvas,[.3],true,P2_LETTER,{scalePercent:100});
     testAssert.equal(manualPages[0].cutMode,'manual');
     testAssert.equal(manualPages[0].height,720);
