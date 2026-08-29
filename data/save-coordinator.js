@@ -85,6 +85,11 @@
   function normalizeCollection(value, name) {
     if (value == null) return [];
     if (!Array.isArray(value)) throw validationError(`${name} must be an array`);
+    for (let index = 0; index < value.length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(value, index)) {
+        throw validationError(`${name} must not be sparse`);
+      }
+    }
     return value.map((record) => cloneRecord(record, name));
   }
 
@@ -98,6 +103,11 @@
   function normalizeMappings(value) {
     if (value == null) return [];
     if (!Array.isArray(value)) throw validationError('mappings must be an array');
+    for (let index = 0; index < value.length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(value, index)) {
+        throw validationError('mappings must not be sparse');
+      }
+    }
     return value.map((mapping) => {
       const record = cloneRecord(mapping, 'mapping');
       return {store: mappingStore(record), record};
@@ -121,22 +131,15 @@
       return `{${Object.keys(value).sort().map((key) =>
         `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
     }
+    if (value === undefined) return 'undefined';
     return JSON.stringify(value);
-  }
-
-  function fingerprint(value) {
-    let hash = 2166136261;
-    for (const character of stableStringify(value)) {
-      hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
-    }
-    return (hash >>> 0).toString(16).padStart(8, '0');
   }
 
   function referenceList(records) {
     return records.map((record) => record.id).sort();
   }
 
-  function requestFingerprint(entry, inputEntry, media, aliases, mappings, provenance, inspection, source) {
+  function requestIdentity(entry, inputEntry, media, aliases, mappings, provenance, inspection, source) {
     const entryIdentity = Object.assign({}, entry);
     delete entryIdentity.id;
     delete entryIdentity.createdAt;
@@ -145,7 +148,7 @@
     if (inputEntry && inputEntry.id != null && String(inputEntry.id).trim() !== '') {
       entryIdentity.id = entry.id;
     }
-    return fingerprint({
+    return stableStringify({
       entry: entryIdentity,
       mediaId: media ? media.id : null,
       aliases: referenceList(aliases),
@@ -176,7 +179,7 @@
       after: entry,
       revision: 1
     });
-    const identity = requestFingerprint(
+    const identity = requestIdentity(
       entry,
       command.entry,
       media,
@@ -201,6 +204,14 @@
     transaction.objectStore('meta').put(receipt);
   }
 
+  function abort(transaction) {
+    try {
+      transaction.abort();
+    } catch (error) {
+      // The transaction may already be aborting from a request error.
+    }
+  }
+
   function saveEntry(command) {
     let prepared;
     try {
@@ -212,58 +223,47 @@
     let transactionError;
 
     return db.run(transactionStores, 'readwrite', (transaction) => {
+      const fail = (error) => {
+        if (!transactionError) transactionError = error;
+        abort(transaction);
+        return null;
+      };
       const meta = transaction.objectStore('meta');
       return db.request(meta.get(receiptKey)).then((receipt) => {
         if (receipt) {
           if (receipt.identity !== prepared.identity) {
-            transactionError = codedError('IDEMPOTENCY_CONFLICT', 'request ID was reused with different records');
-            transaction.abort();
-            return null;
+            return fail(codedError('IDEMPOTENCY_CONFLICT', 'request ID was reused with different records'));
           }
           if (!Array.isArray(receipt.mappings) || receipt.auditEventId == null) {
-            transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt is incomplete');
-            transaction.abort();
-            return null;
+            return fail(codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt is incomplete'));
           }
           return db.request(transaction.objectStore('entries').get(receipt.entryId)).then((entry) => {
             if (!entry) {
-              transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has no committed entry');
-              transaction.abort();
-              return null;
+              return fail(codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has no committed entry'));
             }
             if (receipt.mediaId != null && String(receipt.mediaId).trim() === '') {
-              transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has an invalid media reference');
-              transaction.abort();
-              return null;
+              return fail(codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has an invalid media reference'));
             }
             if (receipt.mappings.some((mapping) =>
               !mapping || !mappingStores.has(mapping.store) || mapping.id == null || String(mapping.id).trim() === '')) {
-              transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has invalid mapping references');
-              transaction.abort();
-              return null;
+              return fail(codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has invalid mapping references'));
             }
             const mediaRequest = receipt.mediaId == null
               ? Promise.resolve(null)
               : db.request(transaction.objectStore('media').get(receipt.mediaId));
             return mediaRequest.then((media) => {
               if (receipt.mediaId != null && !media) {
-                transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has no committed media');
-                transaction.abort();
-                return null;
+                return fail(codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has no committed media'));
               }
               const mappingRequests = receipt.mappings.map((mapping) =>
                 db.request(transaction.objectStore(mapping.store).get(mapping.id)));
               return Promise.all(mappingRequests).then((mappings) => {
                 if (mappings.some((mapping) => !mapping)) {
-                  transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has no committed mapping');
-                  transaction.abort();
-                  return null;
+                  return fail(codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has no committed mapping'));
                 }
                 return db.request(transaction.objectStore('auditEvents').get(receipt.auditEventId)).then((auditEvent) => {
                   if (!auditEvent) {
-                    transactionError = codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has no committed audit event');
-                    transaction.abort();
-                    return null;
+                    return fail(codedError('IDEMPOTENCY_CONFLICT', 'idempotency receipt has no committed audit event'));
                   }
                   return {entry, media: media || undefined, mappings, auditEvent};
                 });
@@ -289,7 +289,7 @@
           mappings: prepared.mappings.map((mapping) => mapping.record),
           auditEvent: prepared.auditEvent
         };
-      });
+      }).catch(fail);
     }).catch((error) => {
       throw transactionError || error;
     });
@@ -318,16 +318,19 @@
 
     let transactionError;
     return db.run(['entries', 'auditEvents'], 'readwrite', (transaction) => {
+      const fail = (error) => {
+        if (!transactionError) transactionError = error;
+        abort(transaction);
+        return null;
+      };
       const entries = transaction.objectStore('entries');
       const auditEvents = transaction.objectStore('auditEvents');
       return db.request(entries.get(id)).then((current) => {
         if (!current || current.recordVersion !== expectedRevision) {
-          transactionError = codedError('REVISION_CONFLICT', 'entry revision does not match the expected revision', {
+          return fail(codedError('REVISION_CONFLICT', 'entry revision does not match the expected revision', {
             conflict: true,
             currentRecord: current || null
-          });
-          transaction.abort();
-          return null;
+          }));
         }
 
         let next;
@@ -340,9 +343,7 @@
             recordVersion: current.recordVersion + 1
           }));
         } catch (error) {
-          transactionError = validationError(error && error.message ? error.message : 'patch is invalid');
-          transaction.abort();
-          return null;
+          return fail(validationError(error && error.message ? error.message : 'patch is invalid'));
         }
         const auditEvent = records.audit({
           entityType: 'entry',
@@ -356,7 +357,7 @@
         entries.put(next);
         auditEvents.add(auditEvent);
         return next;
-      });
+      }).catch(fail);
     }).catch((error) => {
       throw transactionError || error;
     });

@@ -48,6 +48,45 @@ test('invalid mappings roll back an entry save before any store is written', asy
   }
 });
 
+test('sparse aliases, mappings, and provenance are rejected before any save write', async () => {
+  const {context, cleanup} = await saveContext('save-sparse-collections');
+  try {
+    for (const field of ['aliases', 'mappings', 'provenance']) {
+      const invalid = command();
+      invalid[field] = new Array(1);
+      await assert.rejects(
+        context.ClipKitSave.saveEntry(invalid),
+        (error) => error.code === 'VALIDATION_FAILED'
+      );
+    }
+
+    for (const storeName of ['entries', 'mediaAliases', 'domainMappings', 'provenance', 'auditEvents', 'meta']) {
+      assert.deepEqual(await storeRows(context, storeName), [], `${storeName} was written for a sparse collection`);
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test('a request failure after entry write is queued aborts every save write', async () => {
+  const {context, cleanup} = await saveContext('save-late-request-failure');
+  try {
+    const invalid = command();
+    invalid.aliases = [{id: 'alias-1', nonCloneable: () => {}}];
+
+    await assert.rejects(
+      context.ClipKitSave.saveEntry(invalid),
+      (error) => error && error.name === 'DataCloneError'
+    );
+
+    for (const storeName of ['entries', 'mediaAliases', 'provenance', 'auditEvents', 'meta']) {
+      assert.deepEqual(await storeRows(context, storeName), [], `${storeName} was not rolled back after a late failure`);
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
 test('reusing a request ID returns the committed entry without duplicate writes', async () => {
   const {context, cleanup} = await saveContext('save-idempotency');
   try {
@@ -87,6 +126,9 @@ test('idempotent retries reconstruct media, mappings, and the original audit eve
     assert.equal((await storeRows(context, 'media')).length, 1);
     assert.equal((await storeRows(context, 'domainMappings')).length, 1);
     assert.equal((await storeRows(context, 'auditEvents')).length, 1);
+    const receipt = await context.ClipKitRepository.meta.get('request:request-1');
+    assert.match(receipt.identity, /^\{/);
+    assert.match(receipt.identity, /"mediaId":"media-1"/);
 
     const conflicting = command();
     conflicting.media = {id: 'media-2', displayName: 'Different Media'};
