@@ -350,7 +350,10 @@ const p2BasePrepareCaptureFile=prepareCaptureFile;
 prepareCaptureFile=async function(file){
   const item=await p2BasePrepareCaptureFile(file);
   try{item.originalDataUrl=await fileAsDataURL(file);}catch{item.originalDataUrl=item.dataUrl;}
-  const preset=getActiveProject().captureLayoutDefault||{};item.transform=p2Transform({...preset,cutVersion:2,manualCuts:[]});
+  // A freshly reset browser can have no project row yet. Capture import must
+  // still succeed and use the same neutral defaults as a normal project.
+  const project=typeof getActiveProject==='function'?(getActiveProject()||{}):{};
+  const preset=project.captureLayoutDefault||{};item.transform=p2Transform({...preset,cutVersion:2,manualCuts:[]});
   return item;
 };
 const p2BaseOpenCapture=openCapture;
