@@ -147,6 +147,10 @@ async function p2FindMediaLogo(entry){
   return null;
 }
 async function p2GetProjectAsset(project,kind){
+  // Preview/editor can be opened before a project row is hydrated (for
+  // example after clearing browser storage). Treat that as an empty project
+  // instead of dereferencing a missing logo setting.
+  project=project||{};
   let id='';
   if(kind==='client')id=project.clientLogoAssetId||'';
   else if(project.agencyLogoMode==='asset')id=project.agencyLogoAssetId||'';
@@ -497,7 +501,7 @@ function p2DrawSegment(ctx,source,segment,hasHeader,scale,layout=P2_LETTER,trans
   ctx.drawImage(source,0,segment.y,source.width,segment.height,p2SegmentLeft(layout,drawW,t.align),top,drawW,drawH);
 }
 async function p2GeneratePages(entry,images,values,quality='standard',preview=false,format='letter'){
-  const project=getActiveProject(),layout=p2Layout(format),scale=preview?2:p2DpiForQuality(quality)/72,media=await p2FindMediaLogo(entry),client=await p2GetProjectAsset(project,'client'),agency=await p2GetProjectAsset(project,'agency'),assets={media,client,agency},pages=[],qualityRows=[];
+  const project=typeof getActiveProject==='function'?(getActiveProject()||{}):{},layout=p2Layout(format),scale=preview?2:p2DpiForQuality(quality)/72,media=await p2FindMediaLogo(entry),client=await p2GetProjectAsset(project,'client'),agency=await p2GetProjectAsset(project,'agency'),assets={media,client,agency},pages=[],qualityRows=[];
   for(let imageIndex=0;imageIndex<images.length;imageIndex++){
     const item=images[imageIndex],transform=p2Transform(item),source=await p2ProcessedCanvas(item,1),manual=p2ManualCutsForOutput(item),segments=p2PageSegments(source,manual,imageIndex===0,layout,transform),widthPt=p2DrawWidthPt(source,layout,transform),dpi=p2EffectiveDpi(source,layout,transform);qualityRows.push({name:item.name||'Capture '+(imageIndex+1),dpi,widthPt:Math.round(widthPt),scalePercent:transform.scalePercent,align:transform.align,level:p2QualityLevel(dpi),readabilityWarning:transform.scalePercent<50,pageCount:segments.length,tinyTail:segments.length>1&&(segments[segments.length-1].height*widthPt/source.width)<=layout.content.nextH*.12});
     for(let segmentIndex=0;segmentIndex<segments.length;segmentIndex++){
