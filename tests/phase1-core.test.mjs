@@ -100,6 +100,20 @@ test('bootstrap waits for verified migration before hydration and populates the 
   vm.runInContext("testAssert.equal(entries[0].id,'entry-uuid')",context);
 });
 
+test('bootstrap accepts verified migration during safety window and after cutover',async()=>{
+  for(const state of ['safety-window','complete']){
+    const context=loadApp();
+    context.ClipKitMigration.migrate=async()=>({state,verification:{ok:true}});
+    context.ClipKitLegacyAdapter.hydrate=async projectId=>({
+      activeProjectId:projectId,
+      projects:[{id:'default',name:'Default'}],
+      entries:[]
+    });
+    await vm.runInContext('bootstrapClipKit()',context);
+    vm.runInContext("testAssert.equal(entries.length,0)",context);
+  }
+});
+
 test('bootstrap wires every hydrated projection into legacy read sources',async()=>{
   const context=loadApp('',{
     ck_active_proj:'idb-project',

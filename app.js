@@ -3303,7 +3303,9 @@ async function bootstrapClipKit(){
     if(legacySecret&&!safeSession.getItem('ck_gs_secret'))safeSession.setItem('ck_gs_secret',legacySecret);
     safeLS.removeItem('ck_gs_secret');
     const migration=await ClipKitMigration.migrate();
-    if(!migration||migration.state!=='verified'||!migration.verification||migration.verification.ok!==true){
+    const migrationState=migration&&migration.state;
+    const migrationVerified=migration&&migration.verification&&migration.verification.ok===true;
+    if(!migrationVerified||!['verified','safety-window','complete'].includes(migrationState)){
       throw new Error('Migration verification did not complete');
     }
     let snapshot=await ClipKitLegacyAdapter.hydrate(_activeProj);
