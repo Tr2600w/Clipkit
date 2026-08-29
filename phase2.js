@@ -17,7 +17,7 @@ const P2_A4={pageW:595.28,pageH:841.89,frame:{x:35.14,y:27.05,w:521.85,h:136.45}
 const P2_BODY_FONT='400 8.5px Arial,sans-serif';
 const P2_LINK_FONT='400 7.8px Arial,sans-serif';
 function p2Layout(format){return format==='a4'?P2_A4:P2_LETTER;}
-function p2Transform(itemOrTransform={}){const isCapture=itemOrTransform&&typeof itemOrTransform==='object'&&('transform'in itemOrTransform||'dataUrl'in itemOrTransform||'originalDataUrl'in itemOrTransform),value=isCapture?(itemOrTransform.transform||{}):(itemOrTransform||{}),scale=Math.max(25,Math.min(100,Math.round(Number(value.scalePercent)||100))),align=['left','center','right'].includes(value.align)?value.align:'center',firstPageOffsetPt=Math.max(0,Math.min(200,Math.round(Number(value.firstPageOffsetPt)||0))),cutVersion=Number(value.cutVersion)||0,manualCuts=cutVersion===2&&Array.isArray(value.manualCuts)?value.manualCuts.map(Number).filter(r=>r>.01&&r<.99).sort((a,b)=>a-b):[];return{cropLeft:0,cropRight:0,cropTop:0,cropBottom:0,rotation:0,breakRatios:[],...value,scalePercent:scale,align,firstPageOffsetPt,cutVersion,manualCuts};}
+function p2Transform(itemOrTransform={}){const isCapture=itemOrTransform&&typeof itemOrTransform==='object'&&('transform'in itemOrTransform||'dataUrl'in itemOrTransform||'originalDataUrl'in itemOrTransform),value=isCapture?(itemOrTransform.transform||{}):(itemOrTransform||{}),scale=Math.max(25,Math.min(100,Math.round(Number(value.scalePercent)||100))),align=['left','center','right'].includes(value.align)?value.align:'center',firstPageOffsetPt=Math.max(0,Math.min(400,Math.round(Number(value.firstPageOffsetPt)||0))),cutVersion=Number(value.cutVersion)||0,manualCuts=cutVersion===2&&Array.isArray(value.manualCuts)?value.manualCuts.map(Number).filter(r=>r>.01&&r<.99).sort((a,b)=>a-b):[];return{cropLeft:0,cropRight:0,cropTop:0,cropBottom:0,rotation:0,breakRatios:[],...value,scalePercent:scale,align,firstPageOffsetPt,cutVersion,manualCuts};}
 function p2ManualCutsForOutput(itemOrTransform){const transform=p2Transform(itemOrTransform);return transform.cutVersion===2?transform.manualCuts:[];}
 function p2AlignLabel(value){return value==='left'?'ชิดซ้าย':value==='right'?'ชิดขวา':'กึ่งกลาง';}
 
@@ -225,7 +225,13 @@ async function getCaptureRecord(projectId,entryId){
 }
 async function saveCaptureRecord(projectId,entryId,images){
   if(!p2Unified())return window.saveCaptureRecord?window.saveCaptureRecord(projectId,entryId,images):null;
-  const storedImages=(images||[]).map(image=>({...image,previewDataUrl:image.dataUrl,sourceOriginalDataUrl:image.originalDataUrl}));
+  // A transformed capture must be stored as a new asset. Reusing the old
+  // asset id makes the transactional repository reject the new bytes.
+  const storedImages=(images||[]).map(image=>{
+    const next={...image,previewDataUrl:image.dataUrl,sourceOriginalDataUrl:image.originalDataUrl};
+    if(next.assetId){next.id=String(next.id||'capture')+'-edit-'+Date.now()+'-'+Math.random().toString(36).slice(2,7);delete next.assetId;}
+    return next;
+  });
   return ClipKitRepository.captures.saveTransform({id:projectId+':'+entryId,key:projectId+':'+entryId,projectId,entryId,images:storedImages});
 }
 async function p2ChooseProjectFolder(){
