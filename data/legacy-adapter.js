@@ -115,6 +115,8 @@
       prValue: record.prValueSnapshot,
       status: record.workflowStatus || 'draft',
       duration: record.duration || '',
+      logoFile: record.logoFile || '',
+      type: record.type || '',
       captureCount: Math.max(0, Number(record.captureCount) || 0),
       fileName: outputFileName(record, publication, platform, project),
       logoLockedAssetId: record.logoLockAssetId || null,

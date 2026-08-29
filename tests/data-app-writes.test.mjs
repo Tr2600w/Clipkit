@@ -19,17 +19,23 @@ function memoryStorage(seed = {}) {
 
 function appContext(tag) {
   const noop = () => {};
-  const element = new Proxy({
-    addEventListener: noop,
+  const elements = new Map();
+  const element = (id = '') => new Proxy({
+    id, addEventListener: noop,
     classList: {add: noop, remove: noop, toggle: noop, contains: () => false},
     style: {}, dataset: {}, options: [], value: '', checked: false,
     appendChild: noop, removeChild: noop, querySelector: () => null,
     querySelectorAll: () => [], closest: () => null
   }, {get: (target, key) => key in target ? target[key] : noop});
+  const elementById = (id) => {
+    const key = String(id);
+    if (!elements.has(key)) elements.set(key, element(key));
+    return elements.get(key);
+  };
   const document = {
     body: {appendChild: noop}, addEventListener: noop,
-    getElementById: () => element, querySelector: () => null,
-    querySelectorAll: () => [], createElement: () => element
+    getElementById: elementById, querySelector: () => null,
+    querySelectorAll: () => [], createElement: () => element()
   };
   const localStorage = memoryStorage({ck_active_proj: 'default'});
   const context = {
@@ -90,6 +96,14 @@ async function rows(context, storeName) {
 
 function options(idempotencyKey, expectedRevision) {
   return {actor: 'user', idempotencyKey, expectedRevision};
+}
+
+function setValue(context, id, value) {
+  context.document.getElementById(id).value = value;
+}
+
+function setChecked(context, id, value) {
+  context.document.getElementById(id).checked = value;
 }
 
 test('commands validate required fields before a transaction or adapter refresh', async () => {
@@ -165,6 +179,108 @@ test('Project, Media, Platform, and Mapping commands persist then refresh withou
 
   const forbidden = new Set(['ck_projects', 'ck_custom', 'ck_imported', 'ck_platform_registry', 'ck_umap']);
   assert.deepEqual(context.localStorage.writes.filter(([, key]) => forbidden.has(key)), []);
+});
+
+test('Platform command rejects a create whose derived slug collides with an existing Platform', async () => {
+  const context = appContext('platform-slug-collision');
+  await seedCore(context);
+  const before = (await rows(context, 'platforms')).find((platform) => platform.id === 'website');
+
+  const result = await context.savePlatformCommand(
+    {name: 'Website', dbCode: 'COLLIDE', fileCode: 'COLLIDE', active: true},
+    options('platform-slug-collision')
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.conflict, true);
+  const after = (await rows(context, 'platforms')).find((platform) => platform.id === 'website');
+  assert.deepEqual(after, before);
+  assert.equal((await rows(context, 'auditEvents')).length, 0);
+});
+
+test('Entry create command returns the committed record when retried with the same key and payload', async () => {
+  const context = appContext('entry-create-idempotent');
+  await seedCore(context);
+  const payload = {
+    projectId: 'default',
+    publication: 'Retry News',
+    platformId: 'website',
+    publishedDate: '2026-08-30',
+    urlOriginal: 'https://retry.example/story',
+    urlDisplay: 'https://retry.example/story',
+    prValueSnapshot: 150000,
+    media: {
+      publication: 'Retry News',
+      name: 'Retry News',
+      platform: 'Website',
+      prValue: 150000,
+      source: 'custom'
+    },
+    mappings: [{mappingType: 'domain', domain: 'retry.example'}],
+    provenance: [{field: 'publicationId', value: 'Retry News', source: 'user', confirmedByUser: true}]
+  };
+
+  const first = await context.saveEntryCommand(structuredClone(payload), options('entry-create-retry'));
+  const second = await context.saveEntryCommand(structuredClone(payload), options('entry-create-retry'));
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(second.record.id, first.record.id);
+  assert.equal((await rows(context, 'entries')).length, 1);
+  assert.equal((await rows(context, 'media')).filter((record) => record.publication === 'Retry News').length, 1);
+  assert.equal((await rows(context, 'domainMappings')).length, 1);
+  assert.equal((await rows(context, 'auditEvents')).filter((event) => event.action === 'created').length, 1);
+
+  const conflictPayload = structuredClone(payload);
+  conflictPayload.headline = 'Different user payload';
+  const conflict = await context.saveEntryCommand(conflictPayload, options('entry-create-retry'));
+  assert.equal(conflict.ok, false);
+  assert.equal(conflict.conflict, true);
+});
+
+test('Entry add and row edit preserve logo file and type through the adapter view', async () => {
+  const context = appContext('entry-logo-type');
+  await seedCore(context);
+  setValue(context, 'mPub', 'Logo News');
+  setValue(context, 'fPub', '');
+  setValue(context, 'mPlat', 'Website');
+  setValue(context, 'fDate', '2026-08-29');
+  setValue(context, 'mLink', 'https://logo.example/story');
+  setValue(context, 'mPR', '170000');
+  setValue(context, 'logoManual', 'Logo News.jpg');
+  setValue(context, 'fType', 'Online');
+  setValue(context, 'fStatus', 'draft');
+  setChecked(context, 'autoSaveDB', false);
+
+  const created = await context.addEntry();
+
+  assert.equal(created.ok, true);
+  let stored = await context.ClipKitRepository.entries.get(created.record.id);
+  assert.equal(stored.logoFile, 'Logo News.jpg');
+  assert.equal(stored.type, 'Online');
+  let view = context.ClipKitLegacyAdapter.getEntries('default').find((entry) => entry.id === created.record.id);
+  assert.equal(view.logoFile, 'Logo News.jpg');
+  assert.equal(view.type, 'Online');
+
+  setValue(context, 'er_pub', 'Logo News');
+  setValue(context, 'er_plat', 'Website');
+  setValue(context, 'er_date', '2026-08-30');
+  setValue(context, 'er_url', 'https://logo.example/updated');
+  setValue(context, 'er_pr', '180000');
+  setValue(context, 'er_logo', 'Logo News Updated.jpg');
+  setValue(context, 'er_type', 'Feature');
+  setValue(context, 'er_duration', '');
+  setValue(context, 'er_status', 'ready');
+
+  const edited = await context.saveEdit(created.record.id);
+
+  assert.equal(edited.ok, true);
+  stored = await context.ClipKitRepository.entries.get(created.record.id);
+  assert.equal(stored.logoFile, 'Logo News Updated.jpg');
+  assert.equal(stored.type, 'Feature');
+  view = context.ClipKitLegacyAdapter.getEntries('default').find((entry) => entry.id === created.record.id);
+  assert.equal(view.logoFile, 'Logo News Updated.jpg');
+  assert.equal(view.type, 'Feature');
 });
 
 test('Entry command commits Media, Mapping, Provenance, Audit, and Entry atomically and preserves cache on rejection', async () => {

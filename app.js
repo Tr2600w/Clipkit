@@ -117,10 +117,27 @@ function commandFailure(error){
   return{ok:false,error:error instanceof Error?error:new Error(String(error||'Write failed'))};
 }
 function codedCommandError(code,message,properties){return Object.assign(new Error(message),{code},properties||{});}
+function commandGeneratedId(scope,idempotencyKey,index){
+  return 'command:'+scope+':'+String(idempotencyKey)+(index===undefined?'':':'+index);
+}
 function commandRecordIdentity(value){
   if(Array.isArray(value))return'['+value.map(commandRecordIdentity).join(',')+']';
   if(value&&typeof value==='object')return'{'+Object.keys(value).sort().map(key=>JSON.stringify(key)+':'+commandRecordIdentity(value[key])).join(',')+'}';
   return JSON.stringify(value);
+}
+function entryAppFields(values,current){
+  const fields={},source=values||{},existing=current||{};
+  if(Object.prototype.hasOwnProperty.call(source,'logoFile'))fields.logoFile=String(source.logoFile||'').trim();
+  else if(Object.prototype.hasOwnProperty.call(existing,'logoFile'))fields.logoFile=String(existing.logoFile||'');
+  if(Object.prototype.hasOwnProperty.call(source,'type'))fields.type=String(source.type||'').trim();
+  else if(Object.prototype.hasOwnProperty.call(existing,'type'))fields.type=String(existing.type||'');
+  return fields;
+}
+function entryRecordWithAppFields(record,values,current){
+  return Object.assign({},record,entryAppFields(values,current));
+}
+function entryCreateIdentity(values,config){
+  return commandRecordIdentity({values,actor:config.actor});
 }
 function applyCommittedSnapshot(snapshot){
   installLegacySnapshot(snapshot);
@@ -244,8 +261,9 @@ async function savePlatformCommand(values={},options={}){
   const fieldErrors=requiredCommandFields(values,['name']);
   requireCommandIdempotency(config,fieldErrors);
   if(Object.keys(fieldErrors).length)return commandValidation(fieldErrors);
+  const writeValues=values.id==null?Object.assign({},values,{id:platformId(values.name)}):values;
   try{
-    const record=await commitThenRefresh(()=>transactionalRecordWrite('platform','platforms',values,config,canonicalPlatform));
+    const record=await commitThenRefresh(()=>transactionalRecordWrite('platform','platforms',writeValues,config,canonicalPlatform));
     return{ok:true,record};
   }catch(error){return commandFailure(error);}
 }
@@ -279,21 +297,21 @@ async function saveMappingCommand(values={},options={}){
 }
 
 function canonicalEntryInput(values,mediaId){
-  return{
+  return Object.assign({
     id:values.id||commandUuid(),projectId:String(values.projectId||_activeProj),publicationId:String(values.publicationId||mediaId||''),
     publicationDisplayOverride:values.publicationDisplayOverride||'',platformId:String(values.platformId||''),publishedDate:String(values.publishedDate||values.date||''),
     publishedAtRaw:values.publishedAtRaw||values.publishedDate||values.date||'',publishedTimezone:values.publishedTimezone||'',
     urlOriginal:values.urlOriginal!==undefined?values.urlOriginal:(values.url||''),urlCanonical:values.urlCanonical||'',urlDisplay:values.urlDisplay||values.urlOriginal||values.url||'',
     urlFingerprint:values.urlFingerprint||'',platformContentId:values.platformContentId||'',prValueSnapshot:values.prValueSnapshot!==undefined?values.prValueSnapshot:values.prValue,
     prSource:values.prSource||'user',duration:values.duration||'',headline:values.headline||'',remark:values.remark||'',workflowStatus:values.workflowStatus||values.status||'draft',
-    logoLockAssetId:values.logoLockAssetId||null,exportOrder:values.exportOrder===undefined?null:values.exportOrder
-  };
+    logoLockAssetId:values.logoLockAssetId||values.logoLockedAssetId||null,exportOrder:values.exportOrder===undefined?null:values.exportOrder
+  },entryAppFields(values));
 }
 function entryUpdatePatch(values){
   const mapping={publicationId:'publicationId',publicationDisplayOverride:'publicationDisplayOverride',platformId:'platformId',publishedDate:'publishedDate',date:'publishedDate',
     publishedAtRaw:'publishedAtRaw',publishedTimezone:'publishedTimezone',urlCanonical:'urlCanonical',urlDisplay:'urlDisplay',urlFingerprint:'urlFingerprint',
     platformContentId:'platformContentId',prValueSnapshot:'prValueSnapshot',prValue:'prValueSnapshot',prSource:'prSource',duration:'duration',headline:'headline',remark:'remark',
-    workflowStatus:'workflowStatus',status:'workflowStatus',logoLockAssetId:'logoLockAssetId',exportOrder:'exportOrder'};
+    workflowStatus:'workflowStatus',status:'workflowStatus',logoLockAssetId:'logoLockAssetId',logoLockedAssetId:'logoLockAssetId',logoFile:'logoFile',type:'type',exportOrder:'exportOrder'};
   const patch={};Object.entries(mapping).forEach(([source,target])=>{if(values[source]!==undefined)patch[target]=values[source];});return patch;
 }
 function validateEntryUpdatePatch(patch,fieldErrors){
@@ -323,7 +341,8 @@ function updateEntryCompound(values,config){
         const patch=entryUpdatePatch(values);patch.publicationId=mediaId;
         if(values.urlOriginal!==undefined||values.url!==undefined){const url=values.urlOriginal!==undefined?values.urlOriginal:values.url;patch.urlOriginal=url;patch.urlDisplay=values.urlDisplay!==undefined?values.urlDisplay:url;}
         let next;
-        try{next=ClipKitRecords.entry(Object.assign({},current,patch,{id:current.id,createdAt:current.createdAt,updatedAt:commandNow(),recordVersion:current.recordVersion+1}));}
+        try{const input=Object.assign({},current,patch,{id:current.id,createdAt:current.createdAt,updatedAt:commandNow(),recordVersion:current.recordVersion+1});
+          next=entryRecordWithAppFields(ClipKitRecords.entry(input),input,current);}
         catch(error){return fail(codedCommandError('VALIDATION_FAILED',error.message));}
         entriesStore.put(next);if(media)transaction.objectStore('media').put(media);
         const mappings=(values.mappings||[]).map(mapping=>Object.assign({},mapping,{id:mapping.id||commandUuid(),mediaId:mapping.mediaId||mediaId,
@@ -342,7 +361,7 @@ function updateEntryCompound(values,config){
 function createEntryWithLogoMappings(prepared,config){
   const stores=['meta','entries','media','mediaAliases','domainMappings','usernameMappings','mediaPlatformMappings','logoMappings','provenance','inspections','auditEvents'];
   const receiptKey='command:entry-create:'+config.idempotencyKey;
-  const identity=commandRecordIdentity({entry:prepared.entry,media:prepared.media,mappings:prepared.mappings,provenance:prepared.provenance,actor:config.actor});
+  const identity=prepared.identity||commandRecordIdentity({entry:prepared.entry,media:prepared.media,mappings:prepared.mappings,provenance:prepared.provenance,actor:config.actor});
   let transactionError;
   return ClipKitDB.run(stores,'readwrite',transaction=>{
     const fail=error=>{transactionError=transactionError||error;try{transaction.abort();}catch{}return null;};
@@ -350,7 +369,7 @@ function createEntryWithLogoMappings(prepared,config){
     return ClipKitDB.request(meta.get(receiptKey)).then(receipt=>{
       if(receipt){if(receipt.identity!==identity)return fail(codedCommandError('IDEMPOTENCY_CONFLICT','entry create key was reused'));
         return ClipKitDB.request(entriesStore.get(receipt.recordId)).then(entry=>entry?{entry}:fail(codedCommandError('IDEMPOTENCY_CONFLICT','entry receipt has no record')));}
-      const entry=ClipKitRecords.entry(prepared.entry);entriesStore.put(entry);
+      const entry=entryRecordWithAppFields(ClipKitRecords.entry(prepared.entry),prepared.entry);entriesStore.put(entry);
       if(prepared.media)transaction.objectStore('media').put(prepared.media);
       (prepared.aliases||[]).forEach(alias=>transaction.objectStore('mediaAliases').put(alias));
       for(const mapping of prepared.mappings){const mappingConfig=mappingConfiguration(mapping);
@@ -386,19 +405,20 @@ async function saveEntryCommand(values={},options={}){
   if(!values.publicationId&&!mediaValues&&!values.publication)fieldErrors.publicationId='required';
   requireCommandIdempotency(config,fieldErrors);
   if(Object.keys(fieldErrors).length)return commandValidation(fieldErrors);
-  const media=mediaValues?canonicalMedia(Object.assign({},mediaValues,{id:mediaValues.id||commandUuid()}),null):
-    (!values.publicationId&&values.publication?canonicalMedia({publication:values.publication,name:values.publication,platform:values.platform||'',prValue:values.prValueSnapshot,source:'custom'},null):null);
+  const generatedId=(scope,index)=>commandGeneratedId('entry-create:'+scope,config.idempotencyKey,index);
+  const media=mediaValues?canonicalMedia(Object.assign({},mediaValues,{id:mediaValues.id||generatedId('media')}),null):
+    (!values.publicationId&&values.publication?canonicalMedia({id:generatedId('media'),publication:values.publication,name:values.publication,platform:values.platform||'',prValue:values.prValueSnapshot,source:'custom'},null):null);
   const mediaId=values.publicationId||(media&&media.id);
-  const entry=canonicalEntryInput(values,mediaId);
+  const entry=canonicalEntryInput(Object.assign({},values,{id:values.id||generatedId('entry')}),mediaId);
   const sourceMappings=[...(values.mappings||[])];if(values.logoMapping)sourceMappings.push(Object.assign({mappingType:'logo'},values.logoMapping));
-  const mappings=sourceMappings.map(mapping=>Object.assign({},mapping,{id:mapping.id||commandUuid(),mediaId:mapping.mediaId||mediaId,
+  const mappings=sourceMappings.map((mapping,index)=>Object.assign({},mapping,{id:mapping.id||generatedId('mapping',index),mediaId:mapping.mediaId||mediaId,
     type:mapping.type||mapping.mappingType,createdAt:mapping.createdAt||commandNow(),updatedAt:commandNow(),recordVersion:mapping.recordVersion||1}));
-  const provenance=(values.provenance||[]).map(record=>Object.assign({},record,{id:record.id||commandUuid(),entryId:record.entryId||entry.id,
+  const provenance=(values.provenance||[]).map((record,index)=>Object.assign({},record,{id:record.id||generatedId('provenance',index),entryId:record.entryId||entry.id,
     createdAt:record.createdAt||commandNow(),updatedAt:record.updatedAt||commandNow(),recordVersion:record.recordVersion||1}));
   try{
-    const prepared={requestId:config.idempotencyKey,entry,media,aliases:values.aliases||[],mappings,provenance,inspection:values.inspection||null,source:config.actor};
-    const hasLogoMapping=mappings.some(mapping=>{const mappingConfig=mappingConfiguration(mapping);return mappingConfig&&mappingConfig.store==='logoMappings';});
-    const saved=await commitThenRefresh(()=>hasLogoMapping?createEntryWithLogoMappings(prepared,config):ClipKitSaveCoordinator.saveEntry(prepared));
+    const prepared={requestId:config.idempotencyKey,entry,media,aliases:values.aliases||[],mappings,provenance,inspection:values.inspection||null,source:config.actor,
+      identity:entryCreateIdentity(values,config)};
+    const saved=await commitThenRefresh(()=>createEntryWithLogoMappings(prepared,config));
     return{ok:true,record:saved.entry};
   }catch(error){return commandFailure(error);}
 }
@@ -2437,6 +2457,8 @@ async function addEntry(){
   if(manPR&&!isNaN(Number(manPR)))prValue=Number(manPR);
   else{const f=lookupPR(pub,plat);prValue=f?f.value:null;}
   const logoManual=(document.getElementById('logoManual').value||'').trim();
+  const logoFile=logoManual||((findLogoFast(pub)||{}).file||'');
+  const type=(document.getElementById('fType').value||'').trim();
   const f=lookupPR(pub,plat);
   const existingMedia=mediaRecordFor(pub,plat),platformRecord=getPlatformDefinition(plat),parsed=parseUrl(url),mappings=[];
   if(parsed._username)mappings.push({mappingType:'username',username:parsed._username,platformId:platformRecord?platformRecord.id:plat});
@@ -2444,6 +2466,7 @@ async function addEntry(){
   const values={projectId:_activeProj,publicationId:existingMedia?existingMedia.id:undefined,publication:pub,platformId:platformRecord?platformRecord.id:plat,
     publishedDate:date,urlOriginal:url,urlDisplay:url,prValueSnapshot:prValue,prSource:manPR?'user':'media',duration:plat==='TV'?(document.getElementById('fDuration').value||'').trim():'',
     headline:(document.getElementById('fHead').value||'').trim(),remark:(document.getElementById('fRemark').value||'').trim(),workflowStatus:document.getElementById('fStatus').value||'draft',
+    logoFile,type,
     mappings,provenance:[{field:'publicationId',value:pub,source:'user',confirmedByUser:true},{field:'publishedDate',value:date,source:'user',confirmedByUser:true}]};
   if(!existingMedia)values.media={publication:pub,name:pub,platform:plat,prValue,source:autoSave||manPR?'custom':'entry',sourceKey:(f&&f.platform===plat)?f.key:makeDbKey(pub,plat)};
   const result=await runSubmittedAction('add-entry',document.activeElement,key=>saveEntryCommand(values,{actor:'user',idempotencyKey:key}));
@@ -2513,6 +2536,8 @@ async function saveEdit(id){
   const date=document.getElementById('er_date').value||'';
   const url=(document.getElementById('er_url').value||'').trim();
   const prRaw=(document.getElementById('er_pr').value||'').trim();
+  const logoFile=(document.getElementById('er_logo').value||'').trim();
+  const type=(document.getElementById('er_type').value||'').trim();
   const duration=(document.getElementById('er_duration').value||'').trim();
   const status=(document.getElementById('er_status').value||'draft');
   if(!pub){toast('กรุณากรอกชื่อสื่อ','err');return;}
@@ -2523,7 +2548,7 @@ async function saveEdit(id){
   if(parsed._username)mappings.push({mappingType:'username',username:parsed._username,platformId:platformRecord?platformRecord.id:plat});
   if(url){try{const domain=new URL(url).hostname.toLowerCase().replace(/^www\./,'');if(domain)mappings.push({mappingType:'domain',domain});}catch{}}
   const values={id:raw.id,publicationId:existingMedia?existingMedia.id:undefined,publication:pub,platformId:platformRecord?platformRecord.id:plat,publishedDate:date,
-    urlOriginal:url,urlDisplay:url,prValueSnapshot:prValue,duration:plat==='TV'?duration:'',workflowStatus:status,mappings,
+    urlOriginal:url,urlDisplay:url,prValueSnapshot:prValue,duration:plat==='TV'?duration:'',workflowStatus:status,logoFile,type,mappings,
     provenance:[{field:'publicationId',value:pub,source:'user',confirmedByUser:true},{field:'publishedDate',value:date,source:'user',confirmedByUser:true}]};
   if(!existingMedia)values.media={publication:pub,name:pub,platform:plat,prValue,source:'custom',sourceKey:makeDbKey(pub,plat)};
   const result=await runSubmittedAction('edit-entry:'+id,document.activeElement,key=>saveEntryCommand(values,{actor:'user',expectedRevision:raw.recordVersion,idempotencyKey:key}));

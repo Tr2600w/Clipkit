@@ -23,6 +23,16 @@ Pending submit actions now disable only the active action and reuse the same ide
 - `tests/phase1-core.test.mjs`
   - Preserved the existing Phase 1/Phase 2 changes and adjusted UUID action expectations for the new non-destructive Entry lifecycle behavior.
 
+## Fix Round 1
+
+The review findings against `8071bae` were addressed in the app command boundary:
+
+- Entry create retries now use stable generated IDs for command-owned Entry, Media, Mapping, and Provenance rows and compare idempotency receipts against the original user payload, so the same key and payload returns the committed Entry while changed payloads still conflict.
+- Entry add/edit flows now carry `logoFile` and `type` from `logoManual`/`fType` and `er_logo`/`er_type`, preserve those fields on the stored Entry record, and project them through the legacy adapter for table/export consumers.
+- Platform creates now derive the canonical slug before the transactional conflict check, preventing a create for an existing slug such as `Website` from overwriting that Platform.
+
+Regression tests were added to `tests/data-app-writes.test.mjs` for all three cases.
+
 ## Tests
 
 - `/Users/driveigency/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/data-app-writes.test.mjs`
