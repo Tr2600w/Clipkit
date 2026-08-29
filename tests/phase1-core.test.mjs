@@ -114,6 +114,21 @@ test('bootstrap accepts verified migration during safety window and after cutove
   }
 });
 
+test('bootstrap keeps built-in platforms available when hydrated database has no platform rows',async()=>{
+  const context=loadApp();
+  context.ClipKitMigration.migrate=async()=>({state:'verified',verification:{ok:true}});
+  context.ClipKitLegacyAdapter.hydrate=async projectId=>({
+    activeProjectId:projectId, projects:[{id:'default',name:'Default'}], entries:[],
+    mediaRows:[], platforms:[], usernameMap:{}
+  });
+  await vm.runInContext('bootstrapClipKit()',context);
+  vm.runInContext(`
+    testAssert.equal(getPlatformDefinition('Website').name,'Website');
+    testAssert.equal(getPlatformDefinition('FB').name,'Facebook');
+    testAssert.equal(activePlatforms().length >= 4,true);
+  `,context);
+});
+
 test('bootstrap wires every hydrated projection into legacy read sources',async()=>{
   const context=loadApp('',{
     ck_active_proj:'idb-project',
