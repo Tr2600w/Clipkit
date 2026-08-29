@@ -29,8 +29,8 @@ class MemoryStorage {
   removeItem(key) { this.values.delete(key); }
 }
 
-async function seedDatabase(indexedDB, name, stores) {
-  const request = indexedDB.open(name, 2);
+async function seedDatabase(indexedDB, name, stores, version = 2) {
+  const request = indexedDB.open(name, version);
   request.onupgradeneeded = () => {
     for (const [storeName, config] of Object.entries(stores)) {
       if (!request.result.objectStoreNames.contains(storeName)) {
@@ -55,8 +55,8 @@ async function readLegacyStore(indexedDB, name, storeName) {
   return rows;
 }
 
-function fixtureStorage() {
-  return new MemoryStorage({
+function fixtureStorage(overrides = {}) {
+  return new MemoryStorage({...{
     ck_schema_version: '3',
     ck_projects: JSON.stringify([
       {id: 'alpha', name: 'Alpha', clientName: 'Alpha Client', resolverSecret: 'never-copy-me', settings: {theme: 'dark', apiToken: 'also-secret'}},
@@ -87,13 +87,14 @@ function fixtureStorage() {
     ck_umap: JSON.stringify({
       'facebook:dailyalpha': {username: 'dailyalpha', platform: 'Facebook', pub: 'Daily Alpha'}
     }),
-    ck_gs_url: 'https://script.example/not-a-secret'
-  });
+    ck_gs_url: 'https://script.example/not-a-secret',
+    ck_phase2_global: JSON.stringify({title: 'NEWSCLIPPING', agencyLogoAssetId: 'logo-old'})
+  }, ...overrides});
 }
 
-async function fixture(tag) {
+async function fixture(tag, options = {}) {
   const {context, cleanup} = await freshDatabase(tag);
-  const safeLS = fixtureStorage();
+  const safeLS = fixtureStorage(options.storage);
   context.safeLS = safeLS;
   context.localStorage = safeLS;
   await seedDatabase(context.indexedDB, 'clipkit-captures', {
@@ -103,10 +104,12 @@ async function fixture(tag) {
       updatedAt: '2026-08-05T00:00:00.000Z'
     }]}
   });
-  await seedDatabase(context.indexedDB, 'clipkit-phase2', {
+  await seedDatabase(context.indexedDB, options.phase2Name || 'clipkit-phase2-assets', {
     assets: {keyPath: 'id', rows: [{
       id: 'logo-old', name: 'daily-alpha.png', kind: 'media', publication: 'Daily Alpha', platform: 'Facebook',
-      blob: new Blob(['logo-bytes'], {type: 'image/png'}), createdAt: '2026-08-01T00:00:00.000Z'
+      blob: new Blob(['logo-bytes'], {type: 'image/png'}),
+      dataUrl: 'data:image/png;base64,bG9nby1ieXRlcw==',
+      createdAt: '2026-08-01T00:00:00.000Z'
     }]},
     mappings: {keyPath: 'key', rows: [{key: 'media:dailyalpha|facebook', publication: 'Daily Alpha', platform: 'Facebook', assetId: 'logo-old', confirmed: true}]},
     history: {keyPath: 'id', rows: [{id: 'history-old', publication: 'Daily Alpha', platform: 'Facebook', assetId: 'logo-old', scope: 'entry-lock', entryId: 7, projectId: 'alpha', changedAt: '2026-08-02T00:00:00.000Z'}]},
@@ -121,7 +124,7 @@ async function fixture(tag) {
 test('inventory deterministically fingerprints every legacy category without changing the sources', async () => {
   const {context, safeLS, cleanup} = await fixture('migration-inventory');
   const capturesBefore = await readLegacyStore(context.indexedDB, 'clipkit-captures', 'captures');
-  const phase2Before = await readLegacyStore(context.indexedDB, 'clipkit-phase2', 'assets');
+  const phase2Before = await readLegacyStore(context.indexedDB, 'clipkit-phase2-assets', 'assets');
 
   const first = await context.ClipKitMigration.inventory({safeLS, indexedDB: context.indexedDB});
   const second = await context.ClipKitMigration.inventory({safeLS, indexedDB: context.indexedDB});
@@ -138,12 +141,13 @@ test('inventory deterministically fingerprints every legacy category without cha
     assets: 1,
     directories: 1,
     logoHistory: 1,
+    phase2Globals: 1,
     legacySchemaVersions: 3
   });
   assert.equal(first.fingerprint, second.fingerprint);
-  assert.deepEqual(JSON.parse(JSON.stringify(first.schemaVersions)), {localStorage: 3, 'clipkit-captures': 2, 'clipkit-phase2': 2});
+  assert.deepEqual(JSON.parse(JSON.stringify(first.schemaVersions)), {localStorage: 3, 'clipkit-captures': 2, 'clipkit-phase2-assets': 2});
   assert.deepEqual(await readLegacyStore(context.indexedDB, 'clipkit-captures', 'captures'), capturesBefore);
-  assert.deepEqual(await readLegacyStore(context.indexedDB, 'clipkit-phase2', 'assets'), phase2Before);
+  assert.deepEqual(await readLegacyStore(context.indexedDB, 'clipkit-phase2-assets', 'assets'), phase2Before);
   await cleanup();
 });
 
@@ -190,7 +194,7 @@ test('migration remaps colliding entry IDs and binary references, verifies, and 
   assert.equal(rerun.addedRows, 0);
   assert.deepEqual(Object.fromEntries(rerunEntries.map((entry) => [`${entry.projectId}:${entry.legacyId}`, entry.id])), firstIds);
   assert.equal((await readLegacyStore(context.indexedDB, 'clipkit-captures', 'captures')).length, 1);
-  assert.equal((await readLegacyStore(context.indexedDB, 'clipkit-phase2', 'assets')).length, 1);
+  assert.equal((await readLegacyStore(context.indexedDB, 'clipkit-phase2-assets', 'assets')).length, 1);
   await cleanup();
 });
 
@@ -204,6 +208,13 @@ test('completion waits for verification and rollback removes only rows from the 
   });
   const markerBefore = await context.ClipKitDB.run('meta', 'readonly', (tx) => context.ClipKitDB.request(tx.objectStore('meta').get('migration:v1:complete')));
   assert.equal(markerBefore, undefined);
+  const resumed = await context.ClipKitMigration.migrate({
+    legacy: {safeLS, indexedDB: context.indexedDB},
+    uuid: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`,
+    autoVerify: false
+  });
+  assert.equal(resumed.reportId, report.reportId);
+  assert.equal(resumed.addedRows, 0);
 
   const assets = await context.ClipKitDB.run('assets', 'readonly', (tx) => context.ClipKitDB.request(tx.objectStore('assets').getAll()));
   const audits = await context.ClipKitDB.run('auditEvents', 'readonly', (tx) => context.ClipKitDB.request(tx.objectStore('auditEvents').getAll()));
@@ -219,10 +230,253 @@ test('completion waits for verification and rollback removes only rows from the 
   assert.equal(verification.errors.some((error) => error.code === 'FOREIGN_KEY_MISSING' && error.store === 'auditEvents'), true);
   assert.equal(await context.ClipKitDB.run('meta', 'readonly', (tx) => context.ClipKitDB.request(tx.objectStore('meta').get('migration:v1:complete'))), undefined);
 
+  const transactionModes = [];
+  const originalRun = context.ClipKitDB.run;
+  context.ClipKitDB.run = (stores, mode, work) => {
+    transactionModes.push({stores, mode});
+    return originalRun(stores, mode, work);
+  };
   await context.ClipKitMigration.rollback(report.reportId);
+  context.ClipKitDB.run = originalRun;
+  const entryTransactions = transactionModes.filter((call) => call.stores === 'entries').map((call) => call.mode);
+  assert.deepEqual(JSON.parse(JSON.stringify(entryTransactions)), ['readonly', 'readwrite']);
   assert.equal((await context.ClipKitDB.run('entries', 'readonly', (tx) => context.ClipKitDB.request(tx.objectStore('entries').getAll()))).length, 0);
   assert.equal((await context.ClipKitDB.run('assets', 'readonly', (tx) => context.ClipKitDB.request(tx.objectStore('assets').getAll()))).length, 0);
   assert.equal((await readLegacyStore(context.indexedDB, 'clipkit-captures', 'captures')).length, 1);
-  assert.equal((await readLegacyStore(context.indexedDB, 'clipkit-phase2', 'assets')).length, 1);
+  assert.equal((await readLegacyStore(context.indexedDB, 'clipkit-phase2-assets', 'assets')).length, 1);
   await cleanup();
+});
+
+test('inventory merges both Phase 2 database names and blocks conflicting duplicate source rows', async () => {
+  const identical = await fixture('migration-phase2-dedupe');
+  const producerAssets = await readLegacyStore(identical.context.indexedDB, 'clipkit-phase2-assets', 'assets');
+  await seedDatabase(identical.context.indexedDB, 'clipkit-phase2', {
+    assets: {keyPath: 'id', rows: producerAssets},
+    mappings: {keyPath: 'key', rows: []},
+    history: {keyPath: 'id', rows: []},
+    directories: {keyPath: 'key', rows: []}
+  });
+  const deduped = await identical.context.ClipKitMigration.inventory({safeLS: identical.safeLS, indexedDB: identical.context.indexedDB});
+  assert.equal(deduped.counts.assets, 1);
+  await identical.cleanup();
+
+  const conflicting = await fixture('migration-phase2-conflict');
+  await seedDatabase(conflicting.context.indexedDB, 'clipkit-phase2', {
+    assets: {keyPath: 'id', rows: [{...producerAssets[0], blob: new Blob(['different-logo'])}]},
+    mappings: {keyPath: 'key', rows: []},
+    history: {keyPath: 'id', rows: []},
+    directories: {keyPath: 'key', rows: []}
+  });
+  await assert.rejects(
+    conflicting.context.ClipKitMigration.inventory({safeLS: conflicting.safeLS, indexedDB: conflicting.context.indexedDB}),
+    (error) => error.code === 'LEGACY_SOURCE_CONFLICT' && error.store === 'assets'
+  );
+  await conflicting.cleanup();
+});
+
+test('legacy discovery probes without creating databases when database enumeration is unavailable', async () => {
+  const present = await fixture('migration-probe-present');
+  Object.defineProperty(present.context.indexedDB, 'databases', {value: undefined, configurable: true});
+  const inventory = await present.context.ClipKitMigration.inventory({safeLS: present.safeLS, indexedDB: present.context.indexedDB});
+  assert.equal(inventory.counts.assets, 1);
+  delete present.context.indexedDB.databases;
+  await present.cleanup();
+
+  const missing = await freshDatabase('migration-probe-missing');
+  const storage = fixtureStorage({ck_projects: '[]', ck_proj_alpha: '[]', ck_proj_beta: '[]', ck_proj_default: '[]', ck_entries: '[]'});
+  Object.defineProperty(missing.context.indexedDB, 'databases', {value: undefined, configurable: true});
+  loadDataScript(missing.context, 'data/clipkit-db.js');
+  loadDataScript(missing.context, 'data/records.js');
+  loadDataScript(missing.context, 'data/migration.js');
+  const empty = await missing.context.ClipKitMigration.inventory({
+    safeLS: storage,
+    indexedDB: missing.context.indexedDB,
+    databaseNames: ['clipkit-captures', 'clipkit-phase2', 'clipkit-phase2-assets']
+  });
+  assert.equal(empty.counts.assets, 0);
+  delete missing.context.indexedDB.databases;
+  const names = (await missing.context.indexedDB.databases()).map((database) => database.name);
+  assert.equal(names.includes('clipkit-captures'), false);
+  assert.equal(names.includes('clipkit-phase2'), false);
+  assert.equal(names.includes('clipkit-phase2-assets'), false);
+  await missing.cleanup();
+});
+
+test('completed reruns and active resumes reject source drift before mixing records', async () => {
+  const completed = await fixture('migration-completed-drift');
+  let completeSequence = 200;
+  await completed.context.ClipKitMigration.migrate({
+    legacy: {safeLS: completed.safeLS, indexedDB: completed.context.indexedDB},
+    uuid: () => `00000000-0000-4000-8000-${String(++completeSequence).padStart(12, '0')}`
+  });
+  const changedAlpha = JSON.parse(completed.safeLS.getItem('ck_proj_alpha'));
+  changedAlpha[0].headline = 'source changed after completion';
+  completed.safeLS.setItem('ck_proj_alpha', JSON.stringify(changedAlpha));
+  await assert.rejects(
+    completed.context.ClipKitMigration.migrate({legacy: {safeLS: completed.safeLS, indexedDB: completed.context.indexedDB}}),
+    (error) => error.code === 'MIGRATION_SOURCE_CHANGED'
+  );
+  assert.equal(await completed.context.ClipKitDB.run('meta', 'readonly', (tx) => completed.context.ClipKitDB.request(tx.objectStore('meta').get('migration:v1:complete'))), undefined);
+  assert.equal((await completed.context.ClipKitDB.run('entries', 'readonly', (tx) => completed.context.ClipKitDB.request(tx.objectStore('entries').getAll()))).some((entry) => entry.headline === 'source changed after completion'), false);
+  await completed.cleanup();
+
+  const active = await fixture('migration-active-drift');
+  let activeSequence = 300;
+  await active.context.ClipKitMigration.migrate({
+    legacy: {safeLS: active.safeLS, indexedDB: active.context.indexedDB},
+    uuid: () => `00000000-0000-4000-8000-${String(++activeSequence).padStart(12, '0')}`,
+    autoVerify: false
+  });
+  active.safeLS.setItem('ck_umap', JSON.stringify({'facebook:changed': {username: 'changed', platform: 'Facebook', pub: 'Daily Alpha'}}));
+  await assert.rejects(
+    active.context.ClipKitMigration.migrate({legacy: {safeLS: active.safeLS, indexedDB: active.context.indexedDB}}),
+    (error) => error.code === 'MIGRATION_SOURCE_CHANGED'
+  );
+  assert.equal((await active.context.ClipKitDB.run('usernameMappings', 'readonly', (tx) => active.context.ClipKitDB.request(tx.objectStore('usernameMappings').getAll()))).some((row) => row.username === 'changed'), false);
+  await active.cleanup();
+
+  const partial = await fixture('migration-partial-drift', {storage: {ck_custom: '{broken'}});
+  let partialSequence = 350;
+  await assert.rejects(
+    partial.context.ClipKitMigration.migrate({
+      legacy: {safeLS: partial.safeLS, indexedDB: partial.context.indexedDB},
+      uuid: () => `00000000-0000-4000-8000-${String(++partialSequence).padStart(12, '0')}`
+    }),
+    (error) => error.code === 'MIGRATION_SOURCE_PARSE_ERROR'
+  );
+  partial.safeLS.setItem('ck_custom', '[]');
+  await assert.rejects(
+    partial.context.ClipKitMigration.migrate({legacy: {safeLS: partial.safeLS, indexedDB: partial.context.indexedDB}}),
+    (error) => error.code === 'MIGRATION_SOURCE_CHANGED'
+  );
+  assert.equal((await partial.context.ClipKitDB.run('entries', 'readonly', (tx) => partial.context.ClipKitDB.request(tx.objectStore('entries').getAll()))).length, 0);
+  await partial.cleanup();
+});
+
+test('unresolved source references remain in the report and prevent completion', async () => {
+  const brokenProjects = JSON.parse(fixtureStorage().getItem('ck_projects'));
+  brokenProjects[0].clientLogoAssetId = 'missing-project-logo';
+  const broken = await fixture('migration-unresolved', {storage: {
+    ck_projects: JSON.stringify(brokenProjects),
+    ck_umap: JSON.stringify({'facebook:unknown': {username: 'unknown', platform: 'Facebook', pub: 'Missing Publication'}})
+  }});
+  const captureDatabase = await NODE.request(broken.context.indexedDB.open('clipkit-captures'));
+  const captureWrite = captureDatabase.transaction('captures', 'readwrite');
+  captureWrite.objectStore('captures').put({key: 'alpha:404', projectId: 'alpha', entryId: 404, images: []});
+  await NODE.transaction(captureWrite);
+  captureDatabase.close();
+  const producer = await NODE.request(broken.context.indexedDB.open('clipkit-phase2-assets'));
+  const mappingWrite = producer.transaction(['mappings', 'history'], 'readwrite');
+  mappingWrite.objectStore('mappings').put({key: 'missing-logo', publication: 'Daily Alpha', platform: 'Facebook', assetId: 'missing-logo'});
+  mappingWrite.objectStore('history').put({id: 'missing-history', projectId: 'alpha', entryId: 404, assetId: 'missing-logo'});
+  await NODE.transaction(mappingWrite);
+  producer.close();
+
+  let sequence = 400;
+  const report = await broken.context.ClipKitMigration.migrate({
+    legacy: {safeLS: broken.safeLS, indexedDB: broken.context.indexedDB},
+    uuid: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`
+  });
+  assert.equal(report.state, 'verification-failed');
+  assert.equal(report.sourceReferences.some((reference) => reference.legacyValue === 'missing-project-logo' && reference.resolvedId == null), true);
+  assert.equal(report.sourceReferences.some((reference) => reference.legacyValue === 'missing-logo' && reference.resolvedId == null), true);
+  assert.equal(report.sourceReferences.some((reference) => String(reference.legacyValue) === '404' && reference.resolvedId == null), true);
+  assert.equal(report.verification.errors.some((error) => error.code === 'SOURCE_REFERENCE_UNRESOLVED'), true);
+  assert.equal(await broken.context.ClipKitDB.run('meta', 'readonly', (tx) => broken.context.ClipKitDB.request(tx.objectStore('meta').get('migration:v1:complete'))), undefined);
+  await broken.cleanup();
+});
+
+test('destination collisions abort before writes and rollback preserves unrelated rows', async () => {
+  const collision = await fixture('migration-destination-collision');
+  await collision.context.ClipKitDB.run('projects', 'readwrite', (tx) => {
+    tx.objectStore('projects').add({id: 'alpha', name: 'User-owned Alpha', recordVersion: 9});
+  });
+  let sequence = 500;
+  await assert.rejects(
+    collision.context.ClipKitMigration.migrate({
+      legacy: {safeLS: collision.safeLS, indexedDB: collision.context.indexedDB},
+      uuid: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`
+    }),
+    (error) => error.code === 'MIGRATION_DESTINATION_COLLISION' && error.store === 'projects'
+  );
+  const active = await collision.context.ClipKitDB.run('meta', 'readonly', (tx) => collision.context.ClipKitDB.request(tx.objectStore('meta').get('migration:v1:active')));
+  const collisionReport = await collision.context.ClipKitDB.run('meta', 'readonly', (tx) => collision.context.ClipKitDB.request(tx.objectStore('meta').get(`migration:report:${active.reportId}`)));
+  assert.equal(collisionReport.error.code, 'MIGRATION_DESTINATION_COLLISION');
+  const metadataBeforeRollback = await collision.context.ClipKitDB.run('meta', 'readonly', (tx) => collision.context.ClipKitDB.request(tx.objectStore('meta').getAll()));
+  assert.equal(metadataBeforeRollback.some((row) => row.key.startsWith('legacy-id:')), false);
+  await collision.context.ClipKitMigration.rollback(active.reportId);
+  const preserved = await collision.context.ClipKitDB.run('projects', 'readonly', (tx) => collision.context.ClipKitDB.request(tx.objectStore('projects').get('alpha')));
+  assert.equal(preserved.name, 'User-owned Alpha');
+  assert.equal((await collision.context.ClipKitDB.run('entries', 'readonly', (tx) => collision.context.ClipKitDB.request(tx.objectStore('entries').getAll()))).length, 0);
+  await collision.cleanup();
+});
+
+test('safety snapshot preserves raw storage errors and checksums every binary representation', async () => {
+  const corrupt = await fixture('migration-safety-binaries', {storage: {ck_custom: '{broken-json', ck_entries: '{also-broken'}});
+  const inventory = await corrupt.context.ClipKitMigration.inventory({safeLS: corrupt.safeLS, indexedDB: corrupt.context.indexedDB});
+  assert.equal(inventory.parseErrors.some((error) => error.key === 'ck_custom'), true);
+  assert.equal(inventory.parseErrors.filter((error) => error.key === 'ck_entries').length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(inventory.binaryManifest.filter((item) => item.legacyId === 'logo-old').map((item) => item.field).sort())), ['blob', 'dataUrl']);
+  assert.equal(inventory.binaryManifest.find((item) => item.legacyId === 'logo-old' && item.field === 'dataUrl').sha256, '6ca6e2b588e6eac72bbddfe9a172818a9dce1fe141b5645912838bdec2f9ca98');
+  let sequence = 600;
+  await assert.rejects(
+    corrupt.context.ClipKitMigration.migrate({
+      legacy: {safeLS: corrupt.safeLS, indexedDB: corrupt.context.indexedDB},
+      uuid: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`
+    }),
+    (error) => error.code === 'MIGRATION_SOURCE_PARSE_ERROR'
+  );
+  const safetyKey = [...corrupt.safeLS.values.keys()].find((key) => key.startsWith('ck_idb_safety_'));
+  const snapshot = JSON.parse(corrupt.safeLS.getItem(safetyKey));
+  assert.equal(snapshot.localStorage.find((item) => item.key === 'ck_custom').value, '{broken-json');
+  assert.equal(snapshot.parseErrors.some((error) => error.key === 'ck_custom'), true);
+  assert.equal(snapshot.binaryManifest.some((item) => item.field === 'blob' && item.sha256), true);
+  assert.equal(JSON.stringify(snapshot).includes('logo-bytes'), false);
+  await corrupt.cleanup();
+});
+
+test('verification hashes every binary field and detects independent data-url corruption', async () => {
+  const multiple = await fixture('migration-multiple-binaries');
+  const producer = await NODE.request(multiple.context.indexedDB.open('clipkit-phase2-assets'));
+  const sourceWrite = producer.transaction('assets', 'readwrite');
+  const sourceAsset = await NODE.request(sourceWrite.objectStore('assets').get('logo-old'));
+  sourceWrite.objectStore('assets').put({...sourceAsset, originalDataUrl: 'data:application/octet-stream,%89PNG'});
+  await NODE.transaction(sourceWrite);
+  producer.close();
+  let sequence = 700;
+  const report = await multiple.context.ClipKitMigration.migrate({
+    legacy: {safeLS: multiple.safeLS, indexedDB: multiple.context.indexedDB},
+    uuid: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`,
+    autoVerify: false
+  });
+  assert.equal(report.binaryManifest.some((item) => item.field === 'blob'), true);
+  assert.equal(report.binaryManifest.some((item) => item.field === 'dataUrl'), true);
+  assert.equal(report.binaryManifest.some((item) => item.field === 'originalDataUrl'), true);
+  const assets = await multiple.context.ClipKitDB.run('assets', 'readonly', (tx) => multiple.context.ClipKitDB.request(tx.objectStore('assets').getAll()));
+  await multiple.context.ClipKitDB.run('assets', 'readwrite', (tx) => {
+    tx.objectStore('assets').put({...assets[0], dataUrl: 'data:image/png;base64,dGFtcGVyZWQ='});
+  });
+  const verification = await multiple.context.ClipKitMigration.verify(report);
+  assert.equal(verification.errors.some((error) => error.code === 'CHECKSUM_MISMATCH' && error.field === 'dataUrl'), true);
+  await multiple.cleanup();
+});
+
+test('global and Project logo asset references migrate to UUIDs and verify', async () => {
+  const projectRefs = JSON.parse(fixtureStorage().getItem('ck_projects'));
+  projectRefs[0].clientLogoAssetId = 'logo-old';
+  projectRefs[0].agencyLogoAssetId = 'logo-old';
+  const referenced = await fixture('migration-project-assets', {storage: {ck_projects: JSON.stringify(projectRefs)}});
+  let sequence = 800;
+  const report = await referenced.context.ClipKitMigration.migrate({
+    legacy: {safeLS: referenced.safeLS, indexedDB: referenced.context.indexedDB},
+    uuid: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`
+  });
+  const asset = (await referenced.context.ClipKitDB.run('assets', 'readonly', (tx) => referenced.context.ClipKitDB.request(tx.objectStore('assets').getAll())))[0];
+  const project = await referenced.context.ClipKitDB.run('projects', 'readonly', (tx) => referenced.context.ClipKitDB.request(tx.objectStore('projects').get('alpha')));
+  const globalSettings = await referenced.context.ClipKitDB.run('meta', 'readonly', (tx) => referenced.context.ClipKitDB.request(tx.objectStore('meta').get('phase2:global')));
+  assert.equal(project.clientLogoAssetId, asset.id);
+  assert.equal(project.agencyLogoAssetId, asset.id);
+  assert.equal(globalSettings.agencyLogoAssetId, asset.id);
+  assert.equal(report.verification.ok, true);
+  await referenced.cleanup();
 });
