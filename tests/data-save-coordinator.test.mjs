@@ -1,0 +1,209 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {freshDatabase, loadDataScript} from './data-helpers.mjs';
+
+async function saveContext(tag) {
+  const database = await freshDatabase(tag);
+  loadDataScript(database.context, 'data/clipkit-db.js');
+  loadDataScript(database.context, 'data/records.js');
+  loadDataScript(database.context, 'data/repository.js');
+  loadDataScript(database.context, 'data/save-coordinator.js');
+  return database;
+}
+
+function command() {
+  return {
+    requestId: 'request-1',
+    entry: {projectId: 'p1', publicationId: 'm1', platformId: 'website', publishedDate: '2026-08-18'},
+    media: null,
+    aliases: [],
+    mappings: [],
+    provenance: [{id: 'prov-1', field: 'publicationId', value: 'm1', source: 'user', confirmedByUser: true}],
+    inspection: null,
+    source: 'user'
+  };
+}
+
+async function storeRows(context, storeName) {
+  return context.ClipKitDB.run(storeName, 'readonly', (transaction) =>
+    context.ClipKitDB.request(transaction.objectStore(storeName).getAll()));
+}
+
+test('invalid mappings roll back an entry save before any store is written', async () => {
+  const {context, cleanup} = await saveContext('save-rollback');
+  try {
+    const invalid = command();
+    invalid.mappings = [{id: 'mapping-1', type: 'unknown'}];
+
+    await assert.rejects(
+      context.ClipKitSave.saveEntry(invalid),
+      (error) => error.code === 'VALIDATION_FAILED'
+    );
+
+    for (const storeName of ['entries', 'provenance', 'auditEvents', 'meta']) {
+      assert.deepEqual(await storeRows(context, storeName), [], `${storeName} was not rolled back`);
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test('sparse aliases, mappings, and provenance are rejected before any save write', async () => {
+  const {context, cleanup} = await saveContext('save-sparse-collections');
+  try {
+    for (const field of ['aliases', 'mappings', 'provenance']) {
+      const invalid = command();
+      invalid[field] = new Array(1);
+      await assert.rejects(
+        context.ClipKitSave.saveEntry(invalid),
+        (error) => error.code === 'VALIDATION_FAILED'
+      );
+    }
+
+    for (const storeName of [
+      'meta',
+      'entries',
+      'media',
+      'mediaAliases',
+      'domainMappings',
+      'usernameMappings',
+      'mediaPlatformMappings',
+      'provenance',
+      'inspections',
+      'auditEvents'
+    ]) {
+      assert.deepEqual(await storeRows(context, storeName), [], `${storeName} was written for a sparse collection`);
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test('a request failure after entry write is queued aborts every save write', async () => {
+  const {context, cleanup} = await saveContext('save-late-request-failure');
+  try {
+    const invalid = command();
+    invalid.aliases = [{id: 'alias-1', nonCloneable: () => {}}];
+
+    await assert.rejects(
+      context.ClipKitSave.saveEntry(invalid),
+      (error) => error && error.name === 'DataCloneError'
+    );
+
+    for (const storeName of [
+      'meta',
+      'entries',
+      'media',
+      'mediaAliases',
+      'domainMappings',
+      'usernameMappings',
+      'mediaPlatformMappings',
+      'provenance',
+      'inspections',
+      'auditEvents'
+    ]) {
+      assert.deepEqual(await storeRows(context, storeName), [], `${storeName} was not rolled back after a late failure`);
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test('reusing a request ID returns the committed entry without duplicate writes', async () => {
+  const {context, cleanup} = await saveContext('save-idempotency');
+  try {
+    const first = await context.ClipKitSave.saveEntry(command());
+    const second = await context.ClipKitSave.saveEntry(command());
+
+    assert.equal(second.entry.id, first.entry.id);
+    assert.equal((await storeRows(context, 'entries')).length, 1);
+    assert.equal((await storeRows(context, 'auditEvents')).length, 1);
+    assert.equal((await storeRows(context, 'provenance')).length, 1);
+    assert.equal((await storeRows(context, 'meta')).length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('idempotent retries reconstruct media, mappings, and the original audit event', async () => {
+  const {context, cleanup} = await saveContext('save-idempotency-references');
+  try {
+    const request = command();
+    request.media = {id: 'media-1', displayName: 'Example Media'};
+    request.mappings = [{
+      id: 'mapping-1',
+      type: 'domain',
+      mediaId: 'media-1',
+      domain: 'example.test'
+    }];
+
+    const first = await context.ClipKitSave.saveEntry(request);
+    const retry = await context.ClipKitSave.saveEntry(request);
+
+    assert.equal(retry.entry.id, first.entry.id);
+    assert.equal(retry.media.id, first.media.id);
+    assert.deepEqual(Array.from(retry.mappings, (mapping) => mapping.id), Array.from(first.mappings, (mapping) => mapping.id));
+    assert.equal(retry.auditEvent.id, first.auditEvent.id);
+    assert.equal((await storeRows(context, 'entries')).length, 1);
+    assert.equal((await storeRows(context, 'media')).length, 1);
+    assert.equal((await storeRows(context, 'domainMappings')).length, 1);
+    assert.equal((await storeRows(context, 'auditEvents')).length, 1);
+    const receipt = await context.ClipKitRepository.meta.get('request:request-1');
+    assert.match(receipt.identity, /^\{/);
+    assert.match(receipt.identity, /"mediaId":"media-1"/);
+
+    const conflicting = command();
+    conflicting.media = {id: 'media-2', displayName: 'Different Media'};
+    conflicting.mappings = [{
+      id: 'mapping-2',
+      type: 'domain',
+      mediaId: 'media-2',
+      domain: 'different.test'
+    }];
+    await assert.rejects(
+      context.ClipKitSave.saveEntry(conflicting),
+      (error) => error.code === 'IDEMPOTENCY_CONFLICT'
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test('entry updates increment the persisted revision and reject stale revisions', async () => {
+  const {context, cleanup} = await saveContext('save-revisions');
+  try {
+    const saved = await context.ClipKitSave.saveEntry(command());
+    const updated = await context.ClipKitSave.updateEntry(
+      saved.entry.id,
+      1,
+      {headline: 'Updated headline'},
+      'user'
+    );
+
+    assert.equal(updated.recordVersion, 2);
+    assert.equal(updated.headline, 'Updated headline');
+    await assert.rejects(
+      context.ClipKitSave.updateEntry(saved.entry.id, 1, {headline: 'Stale update'}, 'user'),
+      (error) => error.code === 'REVISION_CONFLICT'
+    );
+    assert.equal((await context.ClipKitRepository.audit.listForEntity('entry', saved.entry.id)).length, 2);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('generic entry patches reject protected and unknown fields', async () => {
+  const {context, cleanup} = await saveContext('save-patch-validation');
+  try {
+    const saved = await context.ClipKitSave.saveEntry(command());
+    for (const patch of [{id: 'different-id'}, {createdAt: '2020-01-01'}, {urlOriginal: 'https://changed.test'}, {madeUp: true}]) {
+      await assert.rejects(
+        context.ClipKitSave.updateEntry(saved.entry.id, 1, patch, 'user'),
+        (error) => error.code === 'VALIDATION_FAILED'
+      );
+    }
+    assert.equal((await context.ClipKitRepository.entries.get(saved.entry.id)).recordVersion, 1);
+  } finally {
+    await cleanup();
+  }
+});
