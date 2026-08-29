@@ -212,6 +212,14 @@
     }
   }
 
+  function publishCommitted(record, entityType) {
+    const concurrency = global.ClipKitConcurrency;
+    if (concurrency && typeof concurrency.publish === 'function' && record) {
+      try { concurrency.publish({entityType: entityType || 'entries', entityId: record.id, revision: record.recordVersion}); } catch (error) { /* invalidation is best-effort */ }
+    }
+    return record;
+  }
+
   function saveEntry(command) {
     let prepared;
     try {
@@ -290,6 +298,9 @@
           auditEvent: prepared.auditEvent
         };
       }).catch(fail);
+    }).then((result) => {
+      if (result && result.entry) publishCommitted(result.entry, 'entries');
+      return result;
     }).catch((error) => {
       throw transactionError || error;
     });
@@ -358,7 +369,7 @@
         auditEvents.add(auditEvent);
         return next;
       }).catch(fail);
-    }).catch((error) => {
+    }).then((result) => publishCommitted(result, 'entries')).catch((error) => {
       throw transactionError || error;
     });
   }

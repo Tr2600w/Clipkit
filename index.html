@@ -7,7 +7,10 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css?v=2.3.0">
-<link rel="stylesheet" href="phase2.css?v=2.7.0">
+<link rel="stylesheet" href="phase2.css?v=2.8.0">
+<style>
+.health-card{border:1px solid var(--bdr);border-radius:12px;padding:12px;background:linear-gradient(135deg,#f8fafc,#fff);margin-bottom:12px}.health-card-head{display:flex;justify-content:space-between;gap:10px;align-items:center}.health-card-head strong{display:block;font-size:13px}.health-card-head span{display:block;color:var(--text3);font-size:11px;margin-top:3px}.health-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:12px 0}.health-grid div{border:1px solid var(--bdr);border-radius:8px;padding:8px;background:#fff}.health-grid small{display:block;color:var(--text3);font-size:10px}.health-grid b{display:block;font-size:11px;margin-top:3px}.health-actions{display:flex;gap:7px;margin-top:10px}.health-results{margin-top:10px;border-top:1px solid var(--bdr);padding-top:8px;max-height:130px;overflow:auto;font-size:11px}.health-results .health-issue{padding:5px 0;border-bottom:1px solid #eef2f7}@media(max-width:560px){.health-grid{grid-template-columns:repeat(2,1fr)}}
+</style>
 </head>
 <body>
 
@@ -229,7 +232,8 @@
           <label class="col-tog-lbl"><input type="checkbox" id="col_status" checked onchange="renderTable()"> Status</label>
         </div>
       </div>
-      <button class="btn-clr" onclick="clearAll()" style="color:var(--red);border-color:var(--red)">ล้างทั้งหมด</button>
+    <button class="btn-clr" onclick="clearAll()" style="color:var(--red);border-color:var(--red)">ล้างทั้งหมด</button>
+      <button class="btn-clr" onclick="openTrash()" title="เปิดถังขยะ">🗑 ถังขยะ</button>
       <button class="btn-export" onclick="showExportModal()" style="font-size:11px;padding:7px 13px">⬇ Excel</button>
     </div>
     <div class="tw">
@@ -377,6 +381,8 @@
 
       <!-- Action Buttons -->
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px">
+        <select id="dmSheetsMode" class="fsel" title="โหมดส่งข้อมูล" style="max-width:180px"><option value="append">Append · เฉพาะรายการใหม่</option><option value="update">Update · แสดงรายการเปลี่ยน</option><option value="overwrite">Advanced · Overwrite</option></select>
+        <button class="dm-btn dm-btn-blue" onclick="dmReviewSheets()"><span>🔎</span><span>ตรวจสอบก่อนส่ง</span></button>
         <button class="dm-btn" onclick="dmExportAll()">
           <span>⬆</span><span>Export ทั้งหมดขึ้น Sheets</span>
         </button>
@@ -393,6 +399,9 @@
 
       <!-- Sync Log -->
       <div id="dmLog" style="display:none;background:var(--bdr2);border:1px solid var(--bdr);border-radius:var(--r2);padding:14px;margin-bottom:16px;font-size:12px;line-height:1.8;font-family:var(--mono)"></div>
+      <div id="dmSheetsReview" style="display:none;background:#f8fafc;border:1px solid var(--bdr);border-radius:var(--r2);padding:14px;margin-bottom:16px">
+        <strong>Sheets review</strong><div id="dmSheetsReviewBody" style="font-size:12px;margin-top:8px"></div>
+      </div>
 
       <!-- Audit Results -->
       <div id="dmAudit" style="display:none">
@@ -504,11 +513,26 @@
       </section>
       <section class="settings-section">
         <div class="settings-section-title">Data safety</div>
+        <div class="health-card" id="migrationRecoveryCard">
+          <div class="health-card-head"><div><strong>Migration recovery</strong><span id="migrationRecoveryStatus">ยังไม่ได้ตรวจสอบ</span></div><button class="settings-action compact" type="button" onclick="refreshMigrationRecovery()">ตรวจสอบ</button></div>
+          <div id="migrationRecoveryDetails" class="settings-help">สถานะการย้ายข้อมูลและช่วงเวลาย้อนกลับจะแสดงที่นี่</div>
+          <div class="health-actions"><button id="migrationRollbackBtn" class="settings-action compact subtle" type="button" onclick="rollbackMigrationRecovery()" disabled>ย้อนกลับจาก Safety Snapshot</button><button id="migrationAcknowledgeBtn" class="settings-action compact subtle" type="button" onclick="acknowledgeMigrationRecovery()" disabled>ยืนยัน Cutover</button><button id="migrationCleanupBtn" class="settings-action compact subtle" type="button" onclick="requestLegacyCleanup()" disabled>ล้างข้อมูล Legacy</button></div>
+        </div>
+        <div class="health-card" id="storageHealthCard">
+          <div class="health-card-head"><div><strong>สุขภาพข้อมูลและพื้นที่จัดเก็บ</strong><span id="storageHealthStatus">ยังไม่ได้ตรวจสอบ</span></div><button class="settings-action compact" type="button" onclick="refreshStorageHealth()">ตรวจสอบ</button></div>
+          <div class="health-grid"><div><small>Database</small><b id="healthDbStatus">—</b></div><div><small>Migration</small><b id="healthMigrationStatus">—</b></div><div><small>Storage</small><b id="healthStorageStatus">—</b></div><div><small>Persistence</small><b id="healthPersistenceStatus">—</b></div></div>
+          <div id="healthUsage" class="settings-help">กดตรวจสอบเพื่อดูพื้นที่ใช้งานและรายการที่ควรทำความสะอาด</div>
+          <div class="health-actions"><button class="settings-action compact subtle" type="button" onclick="runDeepHealthAudit()">Deep Audit</button><button class="settings-action compact subtle" type="button" onclick="requestStoragePersistence()">ขอสิทธิ์เก็บข้อมูลถาวร</button></div>
+          <div id="healthAuditResults" class="health-results" hidden></div>
+        </div>
         <div class="settings-actions">
+          <label class="settings-help" style="display:flex;align-items:center;gap:8px">ขอบเขต <select id="backupScope"><option value="all">ข้อมูลทั้งหมด</option><option value="projects">Projects และข่าว</option><option value="assets">โลโก้และภาพ</option></select></label>
+          <label class="settings-help" style="display:flex;align-items:center;gap:8px">รหัสผ่าน (ถ้ามี) <input id="backupPassword" type="password" placeholder="ไม่บังคับ"></label>
           <button class="settings-action" type="button" onclick="exportBackup()">⬇ สำรองข้อมูล</button>
           <button class="settings-action" type="button" onclick="document.getElementById('restoreInput').click()">⬆ กู้คืนข้อมูล</button>
           <input id="restoreInput" type="file" accept="application/json,.json,application/zip,.zip" hidden onchange="restoreBackup(event)">
         </div>
+        <div id="backupInspection" class="settings-help" hidden></div>
         <div class="settings-help">ZIP Backup รวมทุก Project, Capture และคลังโลโก้ แต่ไม่บันทึก Secret Key</div>
       </section>
       <section class="settings-section">
@@ -561,7 +585,42 @@
 
 <!-- Non-destructive image editor -->
 <div id="imageEditModal" class="modal-shell phase2-layer" style="display:none" role="dialog" aria-modal="true" aria-labelledby="imageEditTitle">
-  <div class="image-editor"><header><div><span>NON-DESTRUCTIVE</span><h2 id="imageEditTitle">ปรับภาพและจุดแบ่งหน้า</h2></div><button type="button" onclick="closeImageEditor()">×</button></header><div class="image-editor-body"><div class="image-editor-stage" id="imageEditorStage"><div class="image-frame-shell"><div class="image-frame-ruler"><span>0</span><strong>กรอบ 500 pt</strong><span>500</span></div><div class="image-frame-content" id="imageFrameContent"><div class="image-scaled-preview" id="imageScaledPreview"><img id="imageEditorPreview" alt="ภาพสำหรับปรับแต่ง"><div id="imageBreakLayer"></div></div></div></div></div><aside><section class="manual-scale-panel"><div class="manual-scale-head"><strong>ขนาดภาพ</strong><output id="imageScaleSummary">100% · 500 pt</output></div><input id="imageScaleRange" type="range" min="25" max="100" step="1" value="100" oninput="setEditedScale(this.value)"><div class="manual-scale-input"><input id="imageScalePercent" type="number" min="25" max="100" step="1" value="100" oninput="setEditedScale(this.value)"><span>%</span></div><div class="scale-presets"><button type="button" onclick="setEditedScale(50)">50%</button><button type="button" onclick="setEditedScale(75)">75%</button><button type="button" onclick="setEditedScale(100)">100%</button></div><div class="image-align-control"><button id="imageAlignLeft" type="button" onclick="setEditedAlignment('left')">ชิดซ้าย</button><button id="imageAlignCenter" type="button" onclick="setEditedAlignment('center')">กึ่งกลาง</button><button id="imageAlignRight" type="button" onclick="setEditedAlignment('right')">ชิดขวา</button></div><div class="scale-readability" id="imageScaleWarning"></div><div class="page-tail-warning" id="pageTailWarning" hidden></div><button class="fit-one-page" id="fitOnePageBtn" type="button" onclick="fitEditedImageToOnePage()" hidden>ย่อให้พอดีหน้าเดียว</button><button class="undo-page-cuts" id="undoPageCutsBtn" type="button" onclick="undoPageCutReset()" hidden>↶ ย้อนกลับเส้นแบ่งหน้าเดิม</button><button class="apply-scale-all" type="button" onclick="applyScaleToAllCaptures()">ใช้ขนาดนี้กับทุก Capture</button><button class="undo-scale-all" id="undoScaleAllBtn" type="button" onclick="undoApplyScaleAll()" hidden>↶ ย้อนกลับการใช้กับทุกภาพ</button></section><div class="crop-grid"><label>ซ้าย<input id="cropLeft" type="range" min="0" max="40" value="0" oninput="updateImageGeometry()"></label><label>ขวา<input id="cropRight" type="range" min="0" max="40" value="0" oninput="updateImageGeometry()"></label><label>บน<input id="cropTop" type="range" min="0" max="40" value="0" oninput="updateImageGeometry()"></label><label>ล่าง<input id="cropBottom" type="range" min="0" max="40" value="0" oninput="updateImageGeometry()"></label></div><div class="rotate-actions"><button type="button" onclick="rotateEditedImage(-90)">↶ หมุนซ้าย</button><button type="button" onclick="rotateEditedImage(90)">↷ หมุนขวา</button></div><p>แถบสีคือพื้นที่หน้ากระดาษจริง · เส้นเขียวเป็น Auto cut · ลากแล้วจะเปลี่ยนเป็น Manual cut สีส้ม</p><button class="preview-secondary" type="button" onclick="resetEditedImage()">คืนค่าภาพ</button><button class="capture-export" type="button" onclick="saveImageEdits()">บันทึกการปรับภาพ</button></aside></div></div>
+  <div class="image-editor">
+    <header class="image-editor-head">
+      <div><span>PREPRESS / IMAGE PLACEMENT</span><h2 id="imageEditTitle">จัดวางภาพบนหน้ากระดาษ</h2><p id="imageEditorMeta"></p></div>
+      <button type="button" onclick="closeImageEditor()" aria-label="ปิด">×</button>
+    </header>
+    <div class="image-editor-body">
+      <section class="image-editor-stage" id="imageEditorStage">
+        <div class="editor-stage-toolbar">
+          <div class="editor-view-switch" aria-label="รูปแบบการแสดงผล"><button type="button" data-view="layout" onclick="setEditorView('layout')">หน้ากระดาษ</button><button type="button" data-view="source" onclick="setEditorView('source')">ภาพและจุดตัด</button></div>
+          <div class="editor-zoom"><span>VIEW</span><button type="button" onclick="setEditorZoom(64)">พอดีหน้า</button><button type="button" onclick="setEditorZoom(92)">พอดีกว้าง</button><button type="button" onclick="adjustEditorZoom(-10)" aria-label="ย่อมุมมอง">−</button><output id="editorZoomValue">75%</output><button type="button" onclick="adjustEditorZoom(10)" aria-label="ขยายมุมมอง">+</button></div>
+        </div>
+        <div class="editor-layout-viewport" id="editorLayoutViewport"><div class="editor-page-list" id="imageEditorPageList"></div></div>
+        <div class="editor-source-viewport" id="editorSourceViewport" hidden>
+          <div class="image-frame-shell"><div class="image-frame-ruler"><span>0</span><strong>CAPTURE WIDTH · 500 PT</strong><span>500</span></div><div class="image-frame-content" id="imageFrameContent"><div class="image-scaled-preview" id="imageScaledPreview"><img id="imageEditorPreview" alt="ภาพสำหรับปรับแต่ง"><div id="imageBreakLayer"></div></div></div></div>
+        </div>
+      </section>
+      <aside class="editor-inspector">
+        <section class="inspector-section inspector-primary">
+          <div class="inspector-heading"><div><span>01</span><strong>ตำแหน่งและขนาด</strong></div><output id="imageScaleSummary">100% · 500 pt</output></div>
+          <label class="editor-field-label" for="imageScaleRange">ขนาดภาพใน PDF</label>
+          <input id="imageScaleRange" type="range" min="25" max="100" step="1" value="100" oninput="setEditedScale(this.value)">
+          <div class="editor-value-row"><div class="manual-scale-input"><input id="imageScalePercent" type="number" min="25" max="100" step="1" value="100" oninput="setEditedScale(this.value)"><span>%</span></div><div class="scale-presets"><button type="button" onclick="setEditedScale(50)">50</button><button type="button" onclick="setEditedScale(75)">75</button><button type="button" onclick="setEditedScale(100)">100</button></div></div>
+          <div class="editor-rule"></div>
+          <div class="offset-heading"><label class="editor-field-label" for="imageOffsetRange">ระยะจากขอบบนหน้าแรก</label><output id="imageOffsetSummary">Y +0 pt</output></div>
+          <input id="imageOffsetRange" type="range" min="0" max="200" step="1" value="0" oninput="setEditedOffset(this.value)">
+          <div class="offset-controls"><div class="manual-scale-input"><input id="imageOffsetPt" type="number" min="0" max="200" step="1" value="0" oninput="setEditedOffset(this.value)"><span>pt</span></div><button type="button" onclick="setEditedOffset(0)">ชิดบน</button><button type="button" onclick="setEditedOffset(24)">+24</button></div>
+          <label class="editor-field-label">แนววางภาพ</label><div class="image-align-control"><button id="imageAlignLeft" type="button" onclick="setEditedAlignment('left')">ซ้าย</button><button id="imageAlignCenter" type="button" onclick="setEditedAlignment('center')">กลาง</button><button id="imageAlignRight" type="button" onclick="setEditedAlignment('right')">ขวา</button></div>
+          <div class="scale-readability" id="imageScaleWarning"></div><div class="page-tail-warning" id="pageTailWarning" hidden></div><button class="fit-one-page" id="fitOnePageBtn" type="button" onclick="fitEditedImageToOnePage()" hidden>ย่อให้พอดีหน้าเดียว</button>
+        </section>
+        <details class="inspector-section" open><summary><span>02</span><strong>ครอปและหมุน</strong><i>+</i></summary><div class="inspector-detail"><div class="crop-grid"><label>ซ้าย<input id="cropLeft" type="range" min="0" max="40" value="0" oninput="updateImageGeometry()"></label><label>ขวา<input id="cropRight" type="range" min="0" max="40" value="0" oninput="updateImageGeometry()"></label><label>บน<input id="cropTop" type="range" min="0" max="40" value="0" oninput="updateImageGeometry()"></label><label>ล่าง<input id="cropBottom" type="range" min="0" max="40" value="0" oninput="updateImageGeometry()"></label></div><div class="rotate-actions"><button type="button" onclick="rotateEditedImage(-90)">↶ หมุนซ้าย</button><button type="button" onclick="rotateEditedImage(90)">หมุนขวา ↷</button></div></div></details>
+        <details class="inspector-section"><summary onclick="setEditorView('source')"><span>03</span><strong>จุดแบ่งหน้า</strong><i>+</i></summary><div class="inspector-detail"><p class="editor-note"><b>Auto cut</b> ใช้พื้นที่หน้ากระดาษให้มากที่สุด เปิดมุมมอง “ภาพและจุดตัด” เพื่อลากเป็น Manual cut</p><button class="undo-page-cuts" id="undoPageCutsBtn" type="button" onclick="undoPageCutReset()" hidden>↶ ย้อนกลับเส้นแบ่งหน้าเดิม</button></div></details>
+        <section class="inspector-quality"><span>OUTPUT CHECK</span><strong id="imageEditorQuality">กำลังคำนวณ…</strong></section>
+      </aside>
+    </div>
+    <footer class="image-editor-footer"><div><button class="editor-text-action" type="button" onclick="resetEditedImage()">คืนค่าภาพ</button><button class="editor-text-action" type="button" onclick="saveEditorLayoutDefault()">จำเป็นค่าเริ่มต้นโปรเจกต์</button><button class="editor-text-action" type="button" onclick="applyScaleToAllCaptures()">ใช้ขนาดกับทุก Capture</button><button class="editor-text-action" id="undoScaleAllBtn" type="button" onclick="undoApplyScaleAll()" hidden>↶ ย้อนกลับ</button></div><div><button class="editor-cancel" type="button" onclick="closeImageEditor()">ยกเลิก</button><button class="editor-save" type="button" onclick="saveImageEdits()">บันทึกการปรับภาพ</button></div></footer>
+  </div>
 </div>
 
 <!-- Logo library -->
@@ -607,14 +666,27 @@
   </div>
 </div>
 
+<div id="trashModal" class="modal-shell" style="display:none;z-index:10000" role="dialog" aria-modal="true" aria-labelledby="trashTitle">
+  <style>.trash-row{display:flex;justify-content:space-between;gap:12px;align-items:center;border:1px solid var(--bdr);border-radius:10px;padding:10px 12px;background:var(--panel)}.trash-row small{display:block;color:var(--text3);font-size:11px;margin-top:3px}.trash-row strong{font-size:13px}</style>
+  <div class="settings-card" style="max-width:720px;width:calc(100% - 32px)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><div><div class="settings-section-title">DATA SAFETY</div><h2 id="trashTitle" style="margin:2px 0 0">ถังขยะ</h2><div class="settings-help">รายการที่ลบจะถูกเก็บไว้ชั่วคราวก่อนลบถาวร</div></div><button class="settings-action compact subtle" onclick="closeTrash()">ปิด</button></div>
+    <div id="trashList" style="display:grid;gap:8px;max-height:55vh;overflow:auto"></div>
+  </div>
+</div>
+
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" defer></script>
 <script src="data/clipkit-db.js?v=1.0.0" defer></script>
 <script src="data/records.js?v=1.0.0" defer></script>
 <script src="data/repository.js?v=1.0.0" defer></script>
+<script src="data/lifecycle.js?v=1.0.0" defer></script>
 <script src="data/save-coordinator.js?v=1.0.0" defer></script>
 <script src="data/migration.js?v=1.0.0" defer></script>
 <script src="data/legacy-adapter.js?v=1.0.0" defer></script>
+<script src="data/concurrency.js?v=1.0.0" defer></script>
+<script src="data/storage-manager.js?v=1.0.0" defer></script>
+<script src="data/integrity.js?v=1.0.0" defer></script>
+<script src="data/backup.js?v=1.0.0" defer></script>
 <script src="app.js?v=3.0.0" defer></script>
-<script src="phase2.js?v=2.7.0" defer></script>
+<script src="phase2.js?v=2.8.0" defer></script>
 </body>
 </html>

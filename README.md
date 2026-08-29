@@ -9,7 +9,7 @@ ClipKit is a browser-based news-clipping operations tool for recording PR covera
 - Per-project filename patterns, defaulting to `{YYMMDD}_{Publication}{PlatformSuffix}.pdf`; social/TV suffixes are shared by Letter, A4, Excel, batch ZIP, and CSV output
 - Central Platform Registry for adding, renaming, deactivating, or deleting platforms and editing both DB suffixes (`FB`, `X`, etc.) and filename abbreviations
 - Capture workspace: paste or upload multiple screenshots, reorder, crop, rotate, restore the original, and adjust paper-aware page-break lines
-- Per-capture manual scale from 25–100%, fixed-aspect left/center/right alignment, live 500 pt frame preview, apply-to-all with one-step undo, and persisted effective-DPI metadata
+- Crafted prepress image editor with full-template page previews, independent workspace zoom, per-capture 25–100% scale, fixed-aspect left/center/right alignment, a draggable 0–200 pt first-page placement rail, project layout defaults, and persisted effective-DPI metadata
 - Paper-capacity pagination fills the 430 pt first-page frame and 560 pt continuation frames, ignores obsolete cuts when an image already fits, distinguishes green Auto cuts from orange Manual cuts, warns about tiny final-page tails, and offers a confirmed fit-to-one-page scale
 - `NEWSCLIPPING · Letter` output matching the supplied clipping layout, with a full first-page header and image-only continuation pages
 - Fixed Letter/A4 coordinates calibrated from the reference PDF: 521.85 pt header frame, 128 × 40/44 pt logo slots, 112.7 × 13.56 pt title plate, a 500 × 430 pt first-page capture frame, and 500 × 560 pt continuation frames
@@ -53,6 +53,14 @@ Google Sheets secrets are kept only for the current browser session and are inte
 
 ```bash
 npm test
+npm run test:data
+npm run check
 ```
 
 The app has no build step. It requires a current Node.js version only for the test suite.
+
+### Data ownership and recovery
+
+After migration completes, IndexedDB (`clipkit-data`) is the source of truth for projects, entries, captures, media mappings, logo assets, and export history. Legacy localStorage/IndexedDB data remains read-only during the 30-day safety window. Do not clear browser storage until a ZIP backup has been inspected and verified.
+
+Use Settings → Backup to create a ZIP before moving machines or running a destructive restore. The backup contains canonical records and original image/logo bytes with checksums; directory handles, credentials, cookies, and tokens are intentionally omitted. After restore, select the destination folder again when prompted. Use Settings → Migration recovery to verify the safety window, roll back if required, or review legacy cleanup candidates.

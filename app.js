@@ -222,7 +222,19 @@ async function transactionalRecordWrite(type,storeName,values,options,buildRecor
         return record;
       });
     }).catch(fail);
+  }).then(record=>{
+    if(record&&window.ClipKitConcurrency)try{window.ClipKitConcurrency.publish({entityType:type,entityId:record.id,revision:record.recordVersion});}catch{}
+    return record;
   }).catch(error=>{throw transactionError||error;});
+}
+
+function renderConcurrencyConflict(state){
+  let el=document.getElementById('clipkitConflictBanner');
+  if(!state){if(el)el.remove();return;}
+  if(!el){el=document.createElement('div');el.id='clipkitConflictBanner';el.style='position:fixed;z-index:9999;right:20px;bottom:20px;max-width:420px;padding:14px 16px;border:1px solid #f59e0b;border-radius:12px;background:#fffbeb;color:#78350f;box-shadow:0 10px 30px #0002;font-weight:600';document.body.appendChild(el);}
+  el.innerHTML='<div>'+esc(state.message||'ข้อมูลถูกแก้ไขจากอีกแท็บ')+'</div><div style="margin-top:10px;display:flex;gap:8px"><button type="button" id="clipkitConflictReload">โหลดข้อมูลล่าสุด</button><button type="button" id="clipkitConflictKeep">เก็บฉบับร่างนี้</button></div>';
+  el.querySelector('#clipkitConflictReload').onclick=()=>state.actions.reload();
+  el.querySelector('#clipkitConflictKeep').onclick=()=>{state.actions.keepDraft();renderConcurrencyConflict(null);};
 }
 
 async function createProjectCommand(values={},options={}){
@@ -723,8 +735,12 @@ async function deleteProject(pid, e){
   if(pid === DEFAULT_PROJ){ toast('ลบ Default ไม่ได้','err'); return; }
   const proj = getAllProjects().find(p=>p.id===pid);
   if(!proj) return;
-  toast('การลบ Project จะเปิดใช้พร้อมระบบถังขยะ','info');
-  return{ok:false,error:new Error('Project lifecycle is not available until Trash is enabled')};
+  if(globalThis.ClipKitLifecycle&&ClipKitLifecycle.moveProjectToTrash){
+    try{await ClipKitLifecycle.moveProjectToTrash(pid,{deletedBy:'user'});const list=getAllProjects().filter(p=>p.id!==pid);saveProjectList(list);toast('ย้าย Project ไปถังขยะแล้ว','ok');renderProjects();return{ok:true};}
+    catch(error){toast('ย้าย Project ไปถังขยะไม่สำเร็จ: '+error.message,'err');return{ok:false,error};}
+  }
+  toast('การลบ Project ต้องเปิดใช้ฐานข้อมูลก่อน','info');
+  return{ok:false,error:new Error('Project lifecycle is unavailable')};
 }
 
 function updProjBtn(){
@@ -1209,6 +1225,34 @@ function openSettings(){
   setCfgSt('','');
 }
 function closeSettings(){const m=document.getElementById('settingsModal');if(m)m.style.display='none';}
+function healthText(value){return value==null?'—':String(value).replace(/_/g,' ');}
+function healthSet(id,value){const el=document.getElementById(id);if(el)el.textContent=healthText(value);}
+async function refreshStorageHealth(){
+  const statusEl=document.getElementById('storageHealthStatus');
+  if(statusEl)statusEl.textContent='กำลังตรวจสอบ…';
+  try{
+    const quick=globalThis.ClipKitIntegrity&&await ClipKitIntegrity.quickCheck();
+    const storage=quick&&quick.storage;
+    healthSet('healthDbStatus',quick?quick.status:'พร้อมใช้งาน');
+    healthSet('healthMigrationStatus',quick&&quick.status==='blocked'?'กำลังทำงาน':'พร้อมใช้งาน');
+    healthSet('healthStorageStatus',storage?(storage.level||'unknown'):'ไม่รองรับ');
+    healthSet('healthPersistenceStatus',storage?(storage.persistence||'unknown'):'—');
+    const usage=document.getElementById('healthUsage');
+    if(usage&&storage&&storage.supported){const used=(storage.usage/1048576).toFixed(1),quota=(storage.quota/1048576).toFixed(1);usage.textContent=`ใช้พื้นที่ ${used} MB จาก ${quota} MB (${(storage.ratio*100).toFixed(1)}%)`+(quick.issues.length?` · พบ ${quick.issues.length} คำเตือน`:' · ไม่พบคำเตือน');}
+    if(statusEl)statusEl.textContent=quick&&quick.status==='healthy'?'ปกติ':(quick&&quick.status==='blocked'?'ต้องดำเนินการ':'ควรตรวจสอบ');
+    return quick;
+  }catch(error){if(statusEl)statusEl.textContent='ตรวจสอบไม่สำเร็จ';toast('ตรวจสอบ Storage Health ไม่สำเร็จ','err');return null;}
+}
+async function runDeepHealthAudit(){
+  const box=document.getElementById('healthAuditResults');if(!box)return;
+  box.hidden=false;box.textContent='กำลังทำ Deep Audit…';
+  try{const report=await ClipKitIntegrity.deepAudit();const issues=report.issues||[];box.innerHTML=issues.length?issues.map(i=>`<div class="health-issue"><b>${esc(i.code)}</b> · ${esc(i.message||'ต้องตรวจสอบรายการนี้')}</div>`).join(''):'<div style="color:var(--green);font-weight:700">✓ ไม่พบปัญหาความสมบูรณ์ของข้อมูล</div>';}
+  catch(error){box.textContent='Deep Audit ไม่สำเร็จ: '+(error.message||'unknown error');}
+}
+async function requestStoragePersistence(){
+  try{const result=await ClipKitStorage.requestPersistence();toast(result==='granted'?'✓ อนุญาตเก็บข้อมูลถาวรแล้ว':'ยังไม่ได้รับสิทธิ์เก็บข้อมูลถาวร','ok');await refreshStorageHealth();}
+  catch(error){toast('ขอสิทธิ์ Storage ไม่สำเร็จ','err');}
+}
 function setCfgSt(msg,type){
   const el=document.getElementById('cfgStatus');if(!el)return;
   if(!msg){el.style.display='none';return;}
@@ -1261,15 +1305,19 @@ function collectBackup(){
     sheets:{url:safeLS.getItem('ck_gs_url')||'',sheetUrl:safeLS.getItem('ck_gs_sheeturl')||''}
   };
 }
-function exportBackup(){
-  const backup=collectBackup();
-  const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);
-  a.download='ClipKit_Backup_'+new Date().toISOString().slice(0,10)+'.json';
-  a.click();
-  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
-  toast('✓ สำรองข้อมูลแล้ว','ok');
+async function exportBackup(){
+  try{
+    const backup=collectBackup();
+    const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
+    if(!blob.size)throw new Error('backup is empty');
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='ClipKit_Backup_'+new Date().toISOString().slice(0,10)+'.json';
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+    toast('✓ สำรองข้อมูลแล้ว','ok');
+    return true;
+  }catch(error){ toast('สำรองข้อมูลไม่สำเร็จ','error'); return false; }
 }
 function isValidBackup(data){
   return data&&data.app==='ClipKit'&&Array.isArray(data.projects)&&data.entriesByProject&&typeof data.entriesByProject==='object';
@@ -1493,6 +1541,22 @@ async function dmExportAll(){
   if(!isConnected()){
     toast('ตั้งค่า Google Sheets ก่อน (กด ⚙)','err'); return;
   }
+  // Prefer the revision-aware boundary when the unified data layer is ready.
+  if(window.buildSheetsExport && window.ClipKitRepository?.exports){
+    dmClearLog();
+    const mode=(document.getElementById('dmSheetsMode')||{}).value||'append';
+    if(mode==='overwrite' && !confirm('Advanced Overwrite ต้องทำ Safety Backup ก่อน และจะเขียนทับข้อมูลปลายทาง ดำเนินการต่อหรือไม่?')) return;
+    try{
+      const projectId=window._activeProjId||window._activeProj||'default';
+      const payload=await window.buildSheetsExport(projectId,{mode:mode==='overwrite'?'update':mode});
+      if(!payload.entries.length){dmLog('ไม่มี revision ใหม่ที่ต้องส่ง','warn');return;}
+      await gsCall('save',projectId,payload.entries);
+      await window.ClipKitRepository.exports.create({sheetProjectId:projectId,status:'succeeded',operation:'sheets-export',mode,entries:payload.entries.map(e=>({id:e.id,revision:e.revision})),createdAt:payload.exportedAt});
+      dmLog(`ส่งสำเร็จ ${payload.entries.length} รายการ (revision-aware)`,'ok');
+      _lastSyncTime=new Date().toLocaleString('th-TH'); safeLS.setItem('ck_last_sync',_lastSyncTime); dmRefresh();
+    }catch(e){ dmLog('ส่งไม่สำเร็จ: '+e.message,'err'); }
+    return;
+  }
   dmClearLog();
 
   // Collect ALL entries: built-in + custom + imported (no duplicates by key)
@@ -1556,6 +1620,22 @@ async function dmExportAll(){
   }
 }
 
+// Revision-aware local review. Network credentials remain in the existing
+// connector configuration; this panel only previews the controlled payload.
+async function dmReviewSheets(){
+  const panel=document.getElementById('dmSheetsReview'), body=document.getElementById('dmSheetsReviewBody');
+  if(!panel||!body) return;
+  const mode=(document.getElementById('dmSheetsMode')||{}).value||'append';
+  if(!window.buildSheetsExport || !window.ClipKitRepository){ body.textContent='เปิดฐานข้อมูลก่อนจึงตรวจสอบได้'; panel.style.display='block'; return; }
+  try{
+    const projectId=window._activeProjId||window._activeProj||'default';
+    const payload=await window.buildSheetsExport(projectId,{mode:mode==='overwrite'?'update':mode});
+    body.innerHTML=`โหมด <b>${esc(mode)}</b> · ${payload.entries.length} รายการ · revision โครงการ ${payload.projectRevision}`;
+    if(mode==='overwrite') body.innerHTML += '<br><span style="color:#b45309">Advanced: ต้องทำ Safety Backup ก่อนเขียนทับ</span>';
+    panel.style.display='block';
+  }catch(e){ body.textContent='ตรวจสอบไม่สำเร็จ: '+e.message; panel.style.display='block'; }
+}
+
 // ── Sync from Sheets → merge into local DB (offline-first) ──
 async function dmSyncFromSheets(){
   if(!isConnected()){
@@ -1599,6 +1679,32 @@ async function dmSyncFromSheets(){
     }
     if(!r.entries || !r.entries.length){
       dmLog('Sheet "_db_custom" ว่าง — กด "⬆ Export ทั้งหมด" ก่อน แล้วค่อย Sync', 'warn');
+      return;
+    }
+    // The _db_custom endpoint is a registry payload, not Entry data. Keep its
+    // historical merge behavior so {pub, platform, value} rows are not turned
+    // into fake news entries or rejected by the revision boundary.
+    const legacyRegistry = r.entries.every(e=>e && e.pub !== undefined && e.platform !== undefined && e.value !== undefined && !e.clipkit_entry_id && !e.entryId);
+    if(legacyRegistry){
+      const existing=getCustom(), keys=new Set(existing.map(e=>(e.key||'').toLowerCase()));
+      const additions=r.entries.filter(e=>e.pub && e.platform && !keys.has(`${e.pub} - ${getPlatformCode(e.platform,'db')}`.toLowerCase())).map(e=>({key:`${e.pub} - ${getPlatformCode(e.platform,'db')}`,pub:e.pub,platform:e.platform,value:Number(e.value)||0}));
+      if(additions.length){saveCustom([...existing,...additions]);rebuildDB();dmLog(`โหลด Registry สำเร็จ ${additions.length} รายการ`,'ok');dmRefresh();}
+      else dmLog('Registry ไม่มีรายการใหม่','warn');
+      return;
+    }
+    if(window.inspectSheetsImport && window.applySheetsImport && window.ClipKitRepository){
+      const inspection=await window.inspectSheetsImport(r.entries);
+      const c=inspection.counts||{};
+      dmLog(`ตรวจสอบแล้ว: ใหม่ ${c.new||0} · เปลี่ยน ${c.changed||0} · ขัดแย้ง ${c.conflict||0} · ไม่เปลี่ยน ${c.unchanged||0} · ไม่ถูกต้อง ${c.invalid||0}`,'info');
+      const resolutions={};
+      for(const item of inspection.rows||[]){
+        if(item.kind==='changed'||item.kind==='conflict'){
+          if(!confirm(`รายการ ${item.incoming.id} มีการเปลี่ยนแปลงจาก Sheets\nต้องการใช้ข้อมูลจาก Sheets หรือไม่?`)) resolutions[item.incoming.id]='keep-existing';
+          else resolutions[item.incoming.id]='use-import';
+        }
+      }
+      const report=await window.applySheetsImport(inspection,resolutions);
+      dmLog(`นำเข้าสำเร็จ ${report.written.length} รายการ · ข้าม ${report.skipped.length} รายการ`,'ok');
       return;
     }
 
@@ -2588,12 +2694,51 @@ function clearForm(){
 }
 let _undoTimer=null,_undoEntry=null,_undoIdx=-1;
 async function delEntry(id){
-  if(!entryById(id))return;
-  toast('การลบ Entry จะเปิดใช้พร้อมระบบถังขยะ','info');
-  return{ok:false,error:new Error('Entry lifecycle is not available until Trash is enabled')};
+  const entry=entryById(id); if(!entry)return;
+  if(!globalThis.ClipKitLifecycle?.moveEntryToTrash){toast('ระบบถังขยะยังไม่พร้อม','err');return{ok:false};}
+  if(!confirm('ย้ายรายการนี้ไปถังขยะ? สามารถกู้คืนได้ภายในระยะเวลาที่กำหนด'))return{ok:false,cancelled:true};
+  try{
+    await ClipKitLifecycle.moveEntryToTrash(id,{deletedBy:'user'});
+    const idx=entryIndexById(id); if(idx>=0)entries.splice(idx,1);
+    saveProjEntries(_activeProj,entries); updBadge(); renderTable(); renderRecent();
+    toast('ย้ายรายการไปถังขยะแล้ว','ok'); return{ok:true};
+  }catch(error){toast('ย้ายรายการไม่สำเร็จ: '+error.message,'err');return{ok:false,error};}
 }
-function undoDelete(){toast('ไม่มีรายการในถังขยะสำหรับคืนค่า','info');}
-function clearAll(){toast('การลบหลายรายการจะเปิดใช้พร้อมระบบถังขยะ','info');}
+async function undoDelete(){
+  const rows=await ClipKitLifecycle?.listTrash?.({type:'entry',projectId:_activeProj});
+  const row=rows&&rows[0]; if(!row){toast('ไม่มีรายการในถังขยะสำหรับคืนค่า','info');return;}
+  await ClipKitLifecycle.restore('entry',row.id,{deletedBy:'user'}); await switchProject(_activeProj,true); toast('กู้คืนรายการล่าสุดแล้ว','ok');
+}
+async function clearAll(){
+  if(!entries.length){toast('ไม่มีรายการให้ล้าง','info');return;}
+  if(!globalThis.ClipKitLifecycle?.moveEntryToTrash||!confirm(`ย้าย ${entries.length} รายการไปถังขยะ?`))return;
+  for(const row of [...entries]){try{await ClipKitLifecycle.moveEntryToTrash(row.id,{deletedBy:'user'});}catch(error){console.warn(error);}}
+  entries.length=0; saveProjEntries(_activeProj,entries); updBadge(); renderTable(); renderRecent(); toast('ย้ายรายการทั้งหมดไปถังขยะแล้ว','ok');
+}
+async function openTrash(){
+  const modal=document.getElementById('trashModal'); if(!modal)return;
+  modal.style.display='flex'; await renderTrash();
+}
+function closeTrash(){const modal=document.getElementById('trashModal');if(modal)modal.style.display='none';}
+async function renderTrash(){
+  const el=document.getElementById('trashList');if(!el)return;
+  const rows=await ClipKitLifecycle.listTrash();
+  el.innerHTML=rows.length?rows.map(row=>`<div class="trash-row"><div><strong>${esc(row.publication||row.name||row.id)}</strong><small>${esc(row.store)} · ลบเมื่อ ${esc(row.deletedAt||'—')} · หมดอายุ ${esc(row.purgeAfter||'—')}</small></div><div><button class="settings-action compact" onclick="restoreTrash('${escAttr(row.store==='entries'?'entry':row.store)}','${escAttr(row.id)}')">กู้คืน</button><button class="settings-action compact subtle" onclick="purgeTrash('${escAttr(row.store)}','${escAttr(row.id)}')">ลบถาวร</button></div></div>`).join(''):'<div class="settings-help">ถังขยะว่าง</div>';
+}
+async function restoreTrash(type,id){try{await ClipKitLifecycle.restore(type,id,{deletedBy:'user'});await switchProject(_activeProj,true);await renderTrash();toast('กู้คืนแล้ว','ok');}catch(e){toast('กู้คืนไม่สำเร็จ: '+e.message,'err');}}
+async function purgeTrash(type,id){
+  const rows=await ClipKitLifecycle.listTrash({type,id}), row=rows&&rows[0];
+  if(!row){toast('ไม่พบรายการในถังขยะ','err');return;}
+  if(row.purgeAfter && new Date(row.purgeAfter).getTime()>Date.now()){
+    toast('ยังลบถาวรไม่ได้จนกว่าจะครบระยะเวลาเก็บรักษา','info');return;
+  }
+  if(!confirm('ลบรายการนี้ถาวร? ไม่สามารถกู้คืนได้'))return;
+  const result=await ClipKitLifecycle.purge({type,id});
+  if(result.blocked?.length)toast('ลบไม่ได้เพราะรายการนี้ยังมีรายการอ้างอิง','err');
+  else if(result.removed?.some(item=>String(item.id)===String(id)))toast('ลบถาวรแล้ว','ok');
+  else toast('ระบบไม่สามารถลบรายการนี้ได้','err');
+  await renderTrash();
+}
 
 // ═══ TABLE ═══
 function platCls(p){const m={'Facebook':'pt-fb','Instagram':'pt-ig','YouTube':'pt-yt','TikTok':'pt-tk','X':'pt-x','Website':'pt-ws','Web':'pt-web','TV':'pt-tv','LINE':'pt-line','LINE TODAY':'pt-line','Lemon8':'pt-l8','Threads':'pt-threads','MSN':'pt-msn'};return m[p]||'pt-def';}
@@ -3146,6 +3291,14 @@ function renderBootstrapRecovery(error){
 
 async function bootstrapClipKit(){
   try{
+    if(window.ClipKitConcurrency&&!window._clipkitConcurrency){
+      window._clipkitConcurrency=ClipKitConcurrency.start({tabId:commandUuid(),refetch:async(type,id)=>type==='entries'?ClipKitRepository.entries.get(id):null,onChange:message=>{
+        window._clipkitRemoteChange=message;
+        const dirty=typeof window.isClipKitFormDirty==='function'&&window.isClipKitFormDirty();
+        window._clipkitConflictState=dirty?{message:'ข้อมูลถูกแก้ไขจากอีกแท็บ',latest:message.currentRecord,actions:{reload:()=>window.location.reload(),keepDraft:()=>{window._clipkitConflictState=null;}}}:null;
+        renderConcurrencyConflict(window._clipkitConflictState);
+      },onConflict:message=>{window._clipkitConcurrencyError=message;}});
+    }
     const legacySecret=safeLS.getItem('ck_gs_secret');
     if(legacySecret&&!safeSession.getItem('ck_gs_secret'))safeSession.setItem('ck_gs_secret',legacySecret);
     safeLS.removeItem('ck_gs_secret');
@@ -3193,3 +3346,34 @@ async function bootstrapClipKit(){
 document.addEventListener('DOMContentLoaded', function(){
   void bootstrapClipKit().catch(()=>{});
 });
+
+async function refreshMigrationRecovery(){
+  const statusEl=document.getElementById('migrationRecoveryStatus'), details=document.getElementById('migrationRecoveryDetails');
+  if(!statusEl||!globalThis.ClipKitMigration?.getStatus)return;
+  const s=await ClipKitMigration.getStatus();
+  statusEl.textContent=`สถานะ: ${s.state}${s.reportId?` · ${s.reportId}`:''}`;
+  const counts=s.counts||{}; details.textContent=`Projects ${counts.projects||0} · Entries ${counts.entries||0} · Media ${counts.media||0} · Assets ${counts.assets||0}${s.safetyWindowExpiresAt?` · ย้อนกลับได้ถึง ${new Date(s.safetyWindowExpiresAt).toLocaleString('th-TH')}`:''}`;
+  const rb=document.getElementById('migrationRollbackBtn'), cl=document.getElementById('migrationCleanupBtn');
+  const ack=document.getElementById('migrationAcknowledgeBtn');
+  if(rb)rb.disabled=!s.rollbackEligible;
+  if(ack)ack.disabled=s.state!=='safety-window';
+  if(cl){ const c=await ClipKitMigration.listLegacyCleanup(); cl.disabled=!c.eligible; }
+}
+async function acknowledgeMigrationRecovery(){
+  try{await ClipKitMigration.acknowledgeCutover();toast('ยืนยัน Cutover แล้ว','ok');await refreshMigrationRecovery();}
+  catch(e){toast(e.message||'ยืนยันไม่สำเร็จ','error');}
+}
+async function rollbackMigrationRecovery(){
+  if(!globalThis.ClipKitMigration)return;
+  if(!confirm('ยืนยันย้อนกลับจาก Safety Snapshot? ข้อมูลที่ย้ายเข้าอาจถูกนำออก'))return;
+  try{await ClipKitMigration.rollbackToSafetySnapshot();toast('ย้อนกลับข้อมูลแล้ว','ok');await refreshMigrationRecovery();}catch(e){toast(e.message||'ย้อนกลับไม่สำเร็จ','error');}
+}
+async function requestLegacyCleanup(){
+  if(!globalThis.ClipKitMigration)return;
+  const report=await ClipKitMigration.listLegacyCleanup();
+  const details=document.getElementById('migrationRecoveryDetails');
+  if(!report.eligible){if(details)details.textContent=`ยังไม่สามารถล้างได้: ${report.reason} · ต้องสำรองข้อมูลใหม่และพิมพ์ ${report.typedConfirmation}`;return;}
+  const answer=prompt(`จะลบข้อมูล Legacy ต่อไปนี้:\nKeys: ${report.keys.join(', ')||'(ไม่มี)'}\nDatabases: ${report.databaseNames.join(', ')}\nพิมพ์ ${report.typedConfirmation} เพื่อยืนยัน`);
+  if(answer!==report.typedConfirmation)return;
+  try{await ClipKitMigration.cleanupLegacy({confirmation:answer,createFreshBackup:()=>exportBackup()});toast('ล้างข้อมูล Legacy แล้ว','ok');await refreshMigrationRecovery();}catch(e){toast(e.message||'ล้างข้อมูลไม่สำเร็จ','error');}
+}

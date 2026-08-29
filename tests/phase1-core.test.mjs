@@ -184,6 +184,52 @@ test('rendered migrated UUID actions remain callable across row, Capture, PDF, a
   })()`,context);
 });
 
+test('Phase 2 storage helpers route binary assets, captures, and directory config through unified repositories',async()=>{
+  const context=loadPhase2();
+  await vm.runInContext(`(async()=>{
+    await p2StorePut('assets',{
+      id:'phase2-logo',
+      assetKind:'logo',
+      kind:'media',
+      name:'Daily.png',
+      mime:'image/png',
+      dataUrl:'data:image/png;base64,bG9nby1ieXRlcw==',
+      publication:'Daily',
+      platform:'Website'
+    });
+    testAssert.equal((await ClipKitRepository.assets.get('phase2-logo')).id,'phase2-logo');
+    testAssert.equal(await (await ClipKitRepository.assets.getBlob('phase2-logo')).text(),'logo-bytes');
+    testAssert.equal((await p2StoreGet('assets','phase2-logo')).dataUrl,'data:image/png;base64,bG9nby1ieXRlcw==');
+
+    await p2StorePut('directories',{
+      key:p2DirectoryKey('project-1'),
+      handle:{kind:'directory',name:'Client Exports'},
+      name:'Client Exports',
+      separateOutputFolders:{pdf:true,excel:false,backup:true}
+    });
+    testAssert.equal((await ClipKitRepository.directories.getProjectConfig('project-1')).handle.name,'Client Exports');
+    const [backupDirectory]=await ClipKitRepository.directories.serializeForBackup();
+    testAssert.equal('handle' in backupDirectory,false);
+    testAssert.equal(backupDirectory.name,'Client Exports');
+
+    await saveCaptureRecord('project-1','entry-1',[{
+      id:'capture-image',
+      name:'screen.png',
+      type:'image/png',
+      dataUrl:'data:image/png;base64,cHJldmlldy1ieXRlcw==',
+      originalDataUrl:'data:image/png;base64,Y2FwdHVyZS1ieXRlcw==',
+      width:120,
+      height:240,
+      transform:{rotation:90,scalePercent:70,align:'right',cutVersion:2,manualCuts:[0.5]}
+    }]);
+    const [capture]=await ClipKitRepository.captures.listByEntry('entry-1');
+    testAssert.equal(capture.images[0].transform.rotation,90);
+    testAssert.equal(await (await ClipKitRepository.assets.getBlob(capture.images[0].assetId)).text(),'capture-bytes');
+    const hydrated=await getCaptureRecord('project-1','entry-1');
+    testAssert.equal(hydrated.images[0].originalDataUrl,'data:image/png;base64,Y2FwdHVyZS1ieXRlcw==');
+  })()`,context);
+});
+
 test('bootstrap rejects migration failure and renders a blocking recovery panel',async()=>{
   const context=loadApp();
   context.console={...console,error:()=>{}};

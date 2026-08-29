@@ -1392,5 +1392,72 @@
     if (complete && complete.reportId === reportId) await deleteMeta(COMPLETE_KEY);
   }
 
-  global.ClipKitMigration = {inventory, migrate, verify, rollback};
+  const SAFETY_DAYS = 30;
+  async function latestReport() {
+    const complete = await getMeta(COMPLETE_KEY);
+    if (complete && complete.reportId) return reportFromRecord(await getMeta(`${REPORT_PREFIX}${complete.reportId}`));
+    const active = await getMeta(ACTIVE_KEY);
+    return active && active.reportId ? reportFromRecord(await getMeta(`${REPORT_PREFIX}${active.reportId}`)) : null;
+  }
+  function expiry(report) {
+    const at = Date.parse(report && (report.verifiedAt || report.completedAt || report.migratedAt || report.startedAt));
+    return Number.isFinite(at) ? new Date(at + SAFETY_DAYS * 86400000).toISOString() : null;
+  }
+  async function getStatus() {
+    const report = await latestReport();
+    if (!report) return {state:'not-started', reportId:null, safetyWindowExpiresAt:null, rollbackEligible:false};
+    const verified = report.verification && report.verification.ok;
+    const expiresAt = expiry(report);
+    const within = Boolean(expiresAt && Date.now() < Date.parse(expiresAt));
+    let state = report.state || 'failed';
+    if (verified && !report.acknowledgedAt && within) state = 'safety-window';
+    if (verified && report.acknowledgedAt) state = 'complete';
+    return {state, reportId:report.reportId, startedAt:report.startedAt || null, verifiedAt:report.verification && report.verification.verifiedAt || null,
+      safetyWindowExpiresAt:expiresAt, rollbackEligible:verified && within && !report.acknowledgedAt, acknowledgedAt:report.acknowledgedAt || null,
+      counts:report.destinationCounts || report.inventory && report.inventory.counts || {}, verification:report.verification || null,
+      failure:report.error || null};
+  }
+  async function acknowledgeCutover() {
+    const report = await latestReport();
+    if (!report || !(report.verification && report.verification.ok)) throw codedError('CUTOVER_NOT_VERIFIED','Migration must be verified before cutover acknowledgement');
+    report.acknowledgedAt = new Date().toISOString(); report.state = 'complete';
+    await putMeta(reportRecord(report));
+  }
+  async function rollbackToSafetySnapshot() {
+    const report = await latestReport();
+    const status = await getStatus();
+    if (!report || !status.rollbackEligible) throw codedError('ROLLBACK_WINDOW_EXPIRED','Rollback is unavailable outside the 30-day safety window');
+    const key = `ck_idb_safety_${report.reportId}`;
+    const storage = global.localStorage || global.safeLS;
+    const raw = storage && storage.getItem(key);
+    if (!raw) throw codedError('SAFETY_SNAPSHOT_MISSING','Safety snapshot is unavailable');
+    await rollback(report.reportId);
+    report.state = 'rollback-required'; report.rolledBackAt = new Date().toISOString();
+    await putMeta(reportRecord(report));
+    return {reportId:report.reportId, state:'rollback-required', restoredSnapshotKey:key, legacyDatabases:LEGACY_DATABASES};
+  }
+  async function listLegacyCleanup() {
+    const status = await getStatus();
+    const report = status.reportId ? await getMeta(`${REPORT_PREFIX}${status.reportId}`) : null;
+    const snapshot = report && (global.localStorage || global.safeLS) && (global.localStorage || global.safeLS).getItem(`ck_idb_safety_${status.reportId}`);
+    let keys = [];
+    try { keys = snapshot ? JSON.parse(snapshot).localStorage.map(row => row.key) : []; } catch (_) { keys = []; }
+    const eligible = Boolean(status.reportId && status.state === 'complete' && status.safetyWindowExpiresAt && Date.now() >= Date.parse(status.safetyWindowExpiresAt));
+    return {available:eligible, eligible, reason:eligible ? null : status.state === 'safety-window' ? 'retention-window-active' : 'requires-expired-safety-window',
+      reportId:status.reportId, expiresAt:status.safetyWindowExpiresAt, keys, databaseNames:[LEGACY_DATABASES.captures, ...LEGACY_DATABASES.phase2], requiresFreshBackup:true, typedConfirmation:'DELETE LEGACY DATA'};
+  }
+  async function cleanupLegacy(options) {
+    const config=options||{}, report=await listLegacyCleanup();
+    if(!report.eligible) throw codedError('LEGACY_CLEANUP_NOT_ELIGIBLE','Legacy cleanup is not eligible');
+    if(config.confirmation!=='DELETE LEGACY DATA') throw codedError('LEGACY_CLEANUP_CONFIRMATION_REQUIRED','Typed confirmation is required');
+    if(typeof config.createFreshBackup!=='function') throw codedError('LEGACY_CLEANUP_BACKUP_REQUIRED','A fresh successful backup is required');
+    if(!(await config.createFreshBackup())) throw codedError('LEGACY_CLEANUP_BACKUP_FAILED','Fresh backup failed');
+    const storage=global.localStorage||global.safeLS;
+    for(const key of report.keys) if(storage&&typeof storage.removeItem==='function') storage.removeItem(key);
+    for(const name of report.databaseNames) if(global.indexedDB&&typeof global.indexedDB.deleteDatabase==='function') await new Promise(resolve=>{const req=global.indexedDB.deleteDatabase(name);req.onsuccess=req.onerror=req.onblocked=()=>resolve();});
+    await putMeta({key:`migration:cleanup:${report.reportId}`,reportId:report.reportId,completedAt:new Date().toISOString(),keys:report.keys,databaseNames:report.databaseNames});
+    return {ok:true,deletedKeys:report.keys,deletedDatabases:report.databaseNames};
+  }
+
+  global.ClipKitMigration = {inventory, migrate, verify, rollback, getStatus, rollbackToSafetySnapshot, acknowledgeCutover, listLegacyCleanup, cleanupLegacy};
 }(globalThis));
