@@ -142,7 +142,7 @@
 
     const state = blockers.length === 0
       ? 'ready'
-      : entry.workflowStatus === 'ready' ? 'needs-review' : 'blocked';
+      : references.priorReadinessState === 'ready' ? 'needs-review' : 'blocked';
     return {state, blockers, warnings};
   }
 

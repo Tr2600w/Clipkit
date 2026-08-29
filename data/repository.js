@@ -5,9 +5,9 @@
 
   if (!db) throw new Error('ClipKitDB must be loaded before ClipKitRepository');
 
-  function genericRepository(storeName, keyName) {
+  function genericRepository(storeName, keyName, options) {
     const key = keyName || 'id';
-    return {
+    const repository = {
       get(id) {
         return db.run(storeName, 'readonly', (transaction) =>
           db.request(transaction.objectStore(storeName).get(id)));
@@ -19,15 +19,16 @@
           return db.request(store.put(record)).then(() => record);
         });
       },
-      delete(id) {
-        return db.run(storeName, 'readwrite', (transaction) =>
-          db.request(transaction.objectStore(storeName).delete(id)));
-      },
       getAll() {
         return db.run(storeName, 'readonly', (transaction) =>
           db.request(transaction.objectStore(storeName).getAll()));
       }
     };
+    if (!options || options.allowDelete !== false) {
+      repository.delete = (id) => db.run(storeName, 'readwrite', (transaction) =>
+        db.request(transaction.objectStore(storeName).delete(id)));
+    }
+    return repository;
   }
 
   function getAllFromIndex(storeName, indexName, key) {
@@ -44,7 +45,7 @@
     return dateComparison || compareCreatedAt(first, second);
   }
 
-  const entries = Object.assign(genericRepository('entries'), {
+  const entries = Object.assign(genericRepository('entries', 'id', {allowDelete: false}), {
     async listByProject(projectId, options) {
       const filters = Object.assign({includeDeleted: false, status: '', platformId: '', publicationId: ''}, options || {});
       let rows;
@@ -73,7 +74,7 @@
     }
   });
 
-  const projects = genericRepository('projects');
+  const projects = genericRepository('projects', 'id', {allowDelete: false});
   const media = genericRepository('media');
   const captures = genericRepository('captures');
   const exportsRepository = Object.assign(genericRepository('exportJobs'), {

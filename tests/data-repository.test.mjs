@@ -42,7 +42,7 @@ test('entry requires its project, publication, platform, and date', async () => 
   await cleanup();
 });
 
-test('readiness is independent from draft status and flags a ready entry changed into an incomplete one', async () => {
+test('readiness uses prior calculated readiness rather than workflow status', async () => {
   const {context, cleanup} = await freshDatabase('entry-readiness');
   loadDataScript(context, 'data/records.js');
 
@@ -50,9 +50,25 @@ test('readiness is independent from draft status and flags a ready entry changed
   assert.equal(draftReadiness.state, 'blocked');
   assert.deepEqual([...draftReadiness.blockers].sort(), ['capture', 'logo', 'pr-value']);
 
-  const changedReadyEntry = context.ClipKitRecords.evaluateReadiness({workflowStatus: 'ready'}, {});
-  assert.equal(changedReadyEntry.state, 'needs-review');
+  const workflowReadyOnly = context.ClipKitRecords.evaluateReadiness({workflowStatus: 'ready'}, {});
+  assert.equal(workflowReadyOnly.state, 'blocked');
+
+  const previouslyReady = context.ClipKitRecords.evaluateReadiness(
+    {workflowStatus: 'draft'},
+    {priorReadinessState: 'ready'}
+  );
+  assert.equal(previouslyReady.state, 'needs-review');
   await cleanup();
+});
+
+test('entry and project repositories do not expose hard deletion', async () => {
+  const {context, cleanup} = await repositoryContext('protected-delete');
+  try {
+    assert.equal('delete' in context.ClipKitRepository.entries, false);
+    assert.equal('delete' in context.ClipKitRepository.projects, false);
+  } finally {
+    await cleanup();
+  }
 });
 
 test('entry repository lists a project newest first and excludes soft-deleted records', async () => {
