@@ -399,12 +399,12 @@ test('destination collisions abort before writes and rollback preserves unrelate
     }),
     (error) => error.code === 'MIGRATION_DESTINATION_COLLISION' && error.store === 'projects'
   );
-  const active = await collision.context.ClipKitDB.run('meta', 'readonly', (tx) => collision.context.ClipKitDB.request(tx.objectStore('meta').get('migration:v1:active')));
-  const collisionReport = await collision.context.ClipKitDB.run('meta', 'readonly', (tx) => collision.context.ClipKitDB.request(tx.objectStore('meta').get(`migration:report:${active.reportId}`)));
-  assert.equal(collisionReport.error.code, 'MIGRATION_DESTINATION_COLLISION');
   const metadataBeforeRollback = await collision.context.ClipKitDB.run('meta', 'readonly', (tx) => collision.context.ClipKitDB.request(tx.objectStore('meta').getAll()));
+  const collisionReport = metadataBeforeRollback.find((row) => row.key.startsWith('migration:report:'));
+  assert.equal(collisionReport.error.code, 'MIGRATION_DESTINATION_COLLISION');
   assert.equal(metadataBeforeRollback.some((row) => row.key.startsWith('legacy-id:')), false);
-  await collision.context.ClipKitMigration.rollback(active.reportId);
+  assert.equal(metadataBeforeRollback.some((row) => row.key === 'migration:v1:active'), false);
+  await collision.context.ClipKitMigration.rollback(collisionReport.reportId);
   const preserved = await collision.context.ClipKitDB.run('projects', 'readonly', (tx) => collision.context.ClipKitDB.request(tx.objectStore('projects').get('alpha')));
   assert.equal(preserved.name, 'User-owned Alpha');
   assert.equal((await collision.context.ClipKitDB.run('entries', 'readonly', (tx) => collision.context.ClipKitDB.request(tx.objectStore('entries').getAll()))).length, 0);
@@ -479,4 +479,98 @@ test('global and Project logo asset references migrate to UUIDs and verify', asy
   assert.equal(globalSettings.agencyLogoAssetId, asset.id);
   assert.equal(report.verification.ok, true);
   await referenced.cleanup();
+});
+
+test('reserved legacy mapping rows require exact ownership metadata before reuse', async () => {
+  const seeded = await fixture('migration-reserved-mapping');
+  const conflicting = {
+    key: 'legacy-id:alpha:7',
+    id: 'not-a-uuid',
+    legacyKey: 'beta:7',
+    mappingKind: 'media',
+    schemaNamespace: 'someone-else:v9',
+    mappingSchemaVersion: 99
+  };
+  await seeded.context.ClipKitDB.run('meta', 'readwrite', (tx) => {
+    tx.objectStore('meta').add(conflicting);
+  });
+  let sequence = 900;
+  await assert.rejects(
+    seeded.context.ClipKitMigration.migrate({
+      legacy: {safeLS: seeded.safeLS, indexedDB: seeded.context.indexedDB},
+      uuid: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`
+    }),
+    (error) => error.code === 'MIGRATION_DESTINATION_COLLISION' && error.store === 'meta'
+  );
+  const allMetadata = await seeded.context.ClipKitDB.run('meta', 'readonly', (tx) => seeded.context.ClipKitDB.request(tx.objectStore('meta').getAll()));
+  const reservedRows = allMetadata.filter((row) => row.key.startsWith('legacy-'));
+  assert.equal(reservedRows.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(reservedRows[0])), conflicting);
+  assert.deepEqual(
+    allMetadata.filter((row) => row.key !== conflicting.key).map((row) => row.key),
+    [allMetadata.find((row) => row.key.startsWith('migration:report:')).key]
+  );
+  for (const storeName of ['projects', 'entries', 'media', 'assets', 'captures', 'logoMappings']) {
+    const rows = await seeded.context.ClipKitDB.run(storeName, 'readonly', (tx) => seeded.context.ClipKitDB.request(tx.objectStore(storeName).getAll()));
+    assert.equal(rows.length, 0, storeName);
+  }
+  await seeded.cleanup();
+});
+
+test('rollback rechecks ownership after discovery and preserves a concurrent replacement', async () => {
+  const raced = await fixture('migration-rollback-race');
+  let sequence = 1000;
+  const report = await raced.context.ClipKitMigration.migrate({
+    legacy: {safeLS: raced.safeLS, indexedDB: raced.context.indexedDB},
+    uuid: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`,
+    autoVerify: false
+  });
+  const original = (await raced.context.ClipKitDB.run('entries', 'readonly', (tx) => raced.context.ClipKitDB.request(tx.objectStore('entries').getAll())))[0];
+  const replacement = {...original, headline: 'concurrent replacement', migrationReportId: 'another-report'};
+  const originalRun = raced.context.ClipKitDB.run;
+  let replaced = false;
+  raced.context.ClipKitDB.run = async (stores, mode, work) => {
+    if (stores === 'entries' && mode === 'readwrite' && !replaced) {
+      replaced = true;
+      await originalRun('entries', 'readwrite', (tx) => {
+        tx.objectStore('entries').put(replacement);
+      });
+    }
+    return originalRun(stores, mode, work);
+  };
+  try {
+    await raced.context.ClipKitMigration.rollback(report.reportId);
+  } finally {
+    raced.context.ClipKitDB.run = originalRun;
+  }
+  const preserved = await raced.context.ClipKitDB.run('entries', 'readonly', (tx) => raced.context.ClipKitDB.request(tx.objectStore('entries').get(replacement.id)));
+  assert.equal(preserved.headline, 'concurrent replacement');
+  assert.equal(preserved.migrationReportId, 'another-report');
+  await raced.cleanup();
+});
+
+test('dual database conflicts include MIME type and byte length in binary identity', async () => {
+  const mimeConflict = await fixture('migration-mime-conflict');
+  const producerAsset = (await readLegacyStore(mimeConflict.context.indexedDB, 'clipkit-phase2-assets', 'assets'))[0];
+  await seedDatabase(mimeConflict.context.indexedDB, 'clipkit-phase2', {
+    assets: {keyPath: 'id', rows: [{...producerAsset, blob: new Blob(['logo-bytes'], {type: 'image/jpeg'})}]},
+    mappings: {keyPath: 'key', rows: []},
+    history: {keyPath: 'id', rows: []},
+    directories: {keyPath: 'key', rows: []}
+  });
+  await assert.rejects(
+    mimeConflict.context.ClipKitMigration.inventory({safeLS: mimeConflict.safeLS, indexedDB: mimeConflict.context.indexedDB}),
+    (error) => error.code === 'LEGACY_SOURCE_CONFLICT' && error.store === 'assets'
+  );
+  await mimeConflict.cleanup();
+
+  const manifestFixture = await fixture('migration-binary-identity');
+  const inventory = await manifestFixture.context.ClipKitMigration.inventory({safeLS: manifestFixture.safeLS, indexedDB: manifestFixture.context.indexedDB});
+  const blobIdentity = inventory.binaryManifest.find((item) => item.legacyId === 'logo-old' && item.field === 'blob');
+  const dataUrlIdentity = inventory.binaryManifest.find((item) => item.legacyId === 'logo-old' && item.field === 'dataUrl');
+  assert.equal(blobIdentity.mimeType, 'image/png');
+  assert.equal(blobIdentity.byteLength, 10);
+  assert.equal(dataUrlIdentity.mimeType, 'image/png');
+  assert.equal(dataUrlIdentity.byteLength, 10);
+  await manifestFixture.cleanup();
 });

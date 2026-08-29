@@ -26,6 +26,9 @@
   ];
   const SECRET_KEY = /(secret|token|password|credential|cookie|authorization|api.?key)/i;
   const BINARY_FIELDS = new Set(['blob', 'originalBlob', 'data', 'dataUrl', 'originalDataUrl', 'src']);
+  const MAPPING_NAMESPACE = 'clipkit-migration:v1';
+  const MAPPING_SCHEMA_VERSION = 1;
+  const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
   if (!db) throw new Error('ClipKitDB must be loaded before ClipKitMigration');
   if (!records) throw new Error('ClipKitRecords must be loaded before ClipKitMigration');
@@ -358,6 +361,27 @@
     return [...new Uint8Array(digest)].map((part) => part.toString(16).padStart(2, '0')).join('');
   }
 
+  function binaryMediaType(value) {
+    if (value && typeof value === 'object' && typeof value.type === 'string') return value.type.trim().toLowerCase();
+    if (typeof value === 'string' && /^data:/i.test(value)) {
+      const comma = value.indexOf(',');
+      const metadata = value.slice(5, comma < 0 ? value.length : comma);
+      return (metadata.split(';')[0] || 'text/plain').trim().toLowerCase();
+    }
+    return '';
+  }
+
+  async function binaryIdentity(value) {
+    const input = await bytes(value);
+    if (input == null) return {sha256: null, byteLength: 0, mimeType: binaryMediaType(value)};
+    const digest = await global.crypto.subtle.digest('SHA-256', input);
+    return {
+      sha256: [...new Uint8Array(digest)].map((part) => part.toString(16).padStart(2, '0')).join(''),
+      byteLength: input.byteLength,
+      mimeType: binaryMediaType(value)
+    };
+  }
+
   function binaryFields(record) {
     return [...BINARY_FIELDS].filter((field) => record && record[field] != null);
   }
@@ -365,7 +389,7 @@
   async function canonical(value, seen) {
     if (value == null || typeof value !== 'object') return value;
     if (typeof value.arrayBuffer === 'function' || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-      return {binarySha256: await sha256(value)};
+      return {binaryIdentity: await binaryIdentity(value)};
     }
     const visited = seen || new WeakSet();
     if (visited.has(value)) return '[Circular]';
@@ -379,7 +403,7 @@
     for (const key of Object.keys(value).sort()) {
       if (typeof value[key] === 'function') continue;
       result[key] = BINARY_FIELDS.has(key)
-        ? {binarySha256: await sha256(value[key])}
+        ? {binaryIdentity: await binaryIdentity(value[key])}
         : await canonical(value[key], visited);
     }
     return result;
@@ -413,7 +437,7 @@
       const asset = source.assets[index];
       const legacyId = text(asset.id || `asset-${index}`);
       for (const field of binaryFields(asset)) {
-        manifest.push({store: 'assets', legacyId, field, sha256: await sha256(asset[field])});
+        manifest.push(Object.assign({store: 'assets', legacyId, field}, await binaryIdentity(asset[field])));
       }
     }
     for (let captureIndex = 0; captureIndex < source.captures.length; captureIndex += 1) {
@@ -422,7 +446,7 @@
       const images = arrayValue(capture.images);
       for (let imageIndex = 0; imageIndex < images.length; imageIndex += 1) {
         for (const field of binaryFields(images[imageIndex])) {
-          manifest.push({store: 'captures', legacyId, imageIndex, field, sha256: await sha256(images[imageIndex][field])});
+          manifest.push(Object.assign({store: 'captures', legacyId, imageIndex, field}, await binaryIdentity(images[imageIndex][field])));
         }
       }
     }
@@ -525,20 +549,86 @@
     });
   }
 
-  async function mappedId(key, deps, legacyKey) {
-    const existing = await getMeta(key);
-    if (existing && existing.id) return existing.id;
-    if (existing) {
-      throw codedError('MIGRATION_DESTINATION_COLLISION', `Destination meta key ${key} is already in use`, {
+  function validateMappingRow(existing, specification) {
+    const valid = existing
+      && existing.key === specification.key
+      && existing.legacyKey === specification.legacyKey
+      && existing.mappingKind === specification.mappingKind
+      && existing.schemaNamespace === MAPPING_NAMESPACE
+      && existing.mappingSchemaVersion === MAPPING_SCHEMA_VERSION
+      && UUID_PATTERN.test(text(existing.id));
+    if (!valid) {
+      throw codedError('MIGRATION_DESTINATION_COLLISION', `Reserved migration mapping ${specification.key} is malformed or owned by another identity`, {
         store: 'meta',
-        key
+        key: specification.key,
+        legacyKey: specification.legacyKey,
+        mappingKind: specification.mappingKind
       });
     }
+    return existing.id;
+  }
+
+  async function mappedId(key, deps, legacyKey, mappingKind) {
+    const specification = {key, legacyKey, mappingKind};
+    const existing = await getMeta(key);
+    if (existing) return validateMappingRow(existing, specification);
     const id = deps.uuid();
+    if (!UUID_PATTERN.test(text(id))) throw codedError('MIGRATION_INVALID_MAPPED_ID', `Generated mapped ID for ${key} is not a UUID`, {key, id});
     await db.run('meta', 'readwrite', (transaction) => {
-      transaction.objectStore('meta').add({key, id, legacyKey, createdAt: deps.now()});
+      transaction.objectStore('meta').add({
+        key,
+        id,
+        legacyKey,
+        mappingKind,
+        schemaNamespace: MAPPING_NAMESPACE,
+        mappingSchemaVersion: MAPPING_SCHEMA_VERSION,
+        createdAt: deps.now()
+      });
     });
     return id;
+  }
+
+  function expectedMappingSpecifications(source) {
+    const specifications = [];
+    for (const item of source.media) {
+      const legacyKey = mediaLegacyKey(item);
+      specifications.push({key: `legacy-media-id:${legacyKey}`, legacyKey, mappingKind: 'media'});
+    }
+    source.assets.forEach((legacy, index) => {
+      const legacyKey = text(legacy.id || `asset-${index}`);
+      specifications.push({key: `legacy-asset-id:${legacyKey}`, legacyKey, mappingKind: 'asset'});
+    });
+    for (const item of source.entries) {
+      const legacyKey = compositeEntryKey(item);
+      specifications.push({key: `legacy-id:${legacyKey}`, legacyKey, mappingKind: 'entry'});
+    }
+    source.captures.forEach((legacy) => {
+      const composite = `${text(legacy.projectId || 'default')}:${text(legacy.entryId)}`;
+      const legacyKey = text(legacy.key || composite);
+      specifications.push({key: `legacy-capture-id:${legacyKey}`, legacyKey, mappingKind: 'capture'});
+    });
+    source.usernameMappings.forEach((legacy) => {
+      const legacyKey = `${identity(legacy.platform)}:${identity(legacy.username)}`;
+      specifications.push({key: `legacy-username-mapping-id:${legacyKey}`, legacyKey, mappingKind: 'username-mapping'});
+    });
+    source.logoMappings.forEach((legacy, index) => {
+      const legacyKey = text(legacy.key || `logo-mapping-${index}`);
+      specifications.push({key: `legacy-logo-mapping-id:${legacyKey}`, legacyKey, mappingKind: 'logo-mapping'});
+    });
+    source.logoHistory.forEach((legacy, index) => {
+      const legacyKey = text(legacy.id || `logo-history-${index}`);
+      specifications.push({key: `legacy-logo-history-id:${legacyKey}`, legacyKey, mappingKind: 'logo-history'});
+    });
+    return specifications;
+  }
+
+  async function preflightMappingMetadata(source) {
+    const existingRows = await db.run('meta', 'readonly', (transaction) => db.request(transaction.objectStore('meta').getAll()));
+    const existingByKey = new Map(existingRows.map((row) => [row.key, row]));
+    for (const specification of expectedMappingSpecifications(source)) {
+      const existing = existingByKey.get(specification.key);
+      if (existing) validateMappingRow(existing, specification);
+    }
   }
 
   function reportRecord(report) {
@@ -643,7 +733,7 @@
       const legacy = item.record;
       const legacyKey = mediaLegacyKey(item);
       media.push({
-        id: await mappedId(`legacy-media-id:${legacyKey}`, deps, legacyKey),
+        id: await mappedId(`legacy-media-id:${legacyKey}`, deps, legacyKey, 'media'),
         legacyId: legacy.id || legacy.key || legacyKey,
         publication: text(legacy.pub || legacy.publication || legacy.name),
         name: text(legacy.pub || legacy.publication || legacy.name),
@@ -664,14 +754,14 @@
     for (let index = 0; index < source.assets.length; index += 1) {
       const legacy = source.assets[index];
       const legacyId = text(legacy.id || `asset-${index}`);
-      const id = await mappedId(`legacy-asset-id:${legacyId}`, deps, legacyId);
+      const id = await mappedId(`legacy-asset-id:${legacyId}`, deps, legacyId, 'asset');
       assetIds.set(legacyId, id);
       const fields = binaryFields(legacy);
       const row = Object.assign({}, legacy, {
         id,
         legacyId,
         assetKind: legacy.assetKind || (legacy.kind === 'media' ? 'logo' : legacy.kind || 'logo'),
-        mimeType: legacy.mimeType || legacy.mime || (fields[0] && legacy[fields[0]] && legacy[fields[0]].type) || '',
+        mimeType: legacy.mimeType || legacy.mime || (fields[0] && binaryMediaType(legacy[fields[0]])) || '',
         createdAt: legacy.createdAt || now,
         updatedAt: legacy.updatedAt || legacy.createdAt || now,
         recordVersion: Number.isFinite(legacy.recordVersion) ? legacy.recordVersion : 1,
@@ -680,14 +770,14 @@
       delete row.legacySnapshot;
       assets.push(row);
       for (const field of fields) {
-        assetManifest.push({store: 'assets', id, legacyId, field, sha256: await sha256(legacy[field])});
+        assetManifest.push(Object.assign({store: 'assets', id, legacyId, field}, await binaryIdentity(legacy[field])));
       }
     }
 
     const entryIds = new Map();
     for (const item of source.entries) {
       const composite = compositeEntryKey(item);
-      entryIds.set(composite, await mappedId(`legacy-id:${composite}`, deps, composite));
+      entryIds.set(composite, await mappedId(`legacy-id:${composite}`, deps, composite, 'entry'));
     }
 
     const entries = source.entries.map((item) => {
@@ -754,7 +844,7 @@
         sourceProjectIds.has(text(legacy.projectId || 'default')) ? text(legacy.projectId || 'default') : null
       );
       const legacyKey = text(legacy.key || composite);
-      const id = await mappedId(`legacy-capture-id:${legacyKey}`, deps, legacyKey);
+      const id = await mappedId(`legacy-capture-id:${legacyKey}`, deps, legacyKey, 'capture');
       const images = arrayValue(legacy.images).map((image) => Object.assign({}, image));
       captures.push(Object.assign({}, legacy, {
         id,
@@ -769,7 +859,10 @@
       }));
       for (let imageIndex = 0; imageIndex < images.length; imageIndex += 1) {
         for (const field of binaryFields(images[imageIndex])) {
-          captureManifest.push({store: 'captures', id, legacyId: legacyKey, imageIndex, field, sha256: await sha256(images[imageIndex][field])});
+          captureManifest.push(Object.assign(
+            {store: 'captures', id, legacyId: legacyKey, imageIndex, field},
+            await binaryIdentity(images[imageIndex][field])
+          ));
         }
       }
     }
@@ -783,7 +876,7 @@
       referenceEvidence(sourceReferences, 'username-media', legacyKey, 'mediaId', legacy.pub, publication && publication.id);
       referenceEvidence(sourceReferences, 'username-platform', legacyKey, 'platformId', legacy.platform, platform && platform.id);
       usernameMappings.push({
-        id: await mappedId(`legacy-username-mapping-id:${legacyKey}`, deps, legacyKey),
+        id: await mappedId(`legacy-username-mapping-id:${legacyKey}`, deps, legacyKey, 'username-mapping'),
         legacyId: legacyKey,
         username: text(legacy.username),
         platformId: platform && platform.id,
@@ -807,7 +900,7 @@
       referenceEvidence(sourceReferences, 'logo-platform', legacyKey, 'platformId', legacy.platform || 'Website', platform && platform.id);
       referenceEvidence(sourceReferences, 'logo-asset', legacyKey, 'assetId', legacy.assetId, mappedAssetId);
       logoMappings.push({
-        id: await mappedId(`legacy-logo-mapping-id:${legacyKey}`, deps, legacyKey),
+        id: await mappedId(`legacy-logo-mapping-id:${legacyKey}`, deps, legacyKey, 'logo-mapping'),
         legacyId: legacyKey,
         mediaId: publication && publication.id,
         platformId: platform && platform.id,
@@ -833,7 +926,7 @@
       referenceEvidence(sourceReferences, 'audit-asset', legacyId, 'after.assetId', legacy.assetId, currentAssetId);
       referenceEvidence(sourceReferences, 'audit-asset', legacyId, 'before.assetId', legacy.previousAssetId, previousAssetId);
       auditEvents.push(Object.assign(records.audit({
-        id: await mappedId(`legacy-logo-history-id:${legacyId}`, deps, legacyId),
+        id: await mappedId(`legacy-logo-history-id:${legacyId}`, deps, legacyId, 'logo-history'),
         entityType: entryId ? 'entry' : 'asset',
         entityId: entryId || currentAssetId,
         action: 'legacy-logo-change',
@@ -1000,6 +1093,7 @@
     let report = active && active.reportId
       ? reportFromRecord(await getMeta(`${REPORT_PREFIX}${active.reportId}`))
       : null;
+    let createdReport = false;
     if (report && (report.inventory.fingerprint !== migrationInventory.fingerprint
       || JSON.stringify(report.inventory.binaryManifest || []) !== JSON.stringify(migrationInventory.binaryManifest || []))) {
       report.state = 'source-changed';
@@ -1037,6 +1131,7 @@
       deps.safeLS.setItem(`ck_idb_safety_${reportId}`, JSON.stringify(snapshot));
       await putMeta(reportRecord(report));
       await putMeta({key: ACTIVE_KEY, reportId, startedAt});
+      createdReport = true;
     }
 
     if (migrationInventory.parseErrors.length) {
@@ -1049,8 +1144,11 @@
       });
     }
 
+    let preflightComplete = false;
     try {
       await preflightNaturalKeys(source, report.reportId);
+      await preflightMappingMetadata(source);
+      preflightComplete = true;
       const built = await buildRows(source, report, deps);
       const pending = await preflightDestination(built, report.reportId);
       let addedRows = 0;
@@ -1091,6 +1189,10 @@
       report.state = 'failed';
       report.error = {code: error.code || 'MIGRATION_FAILED', name: error.name || 'Error', message: error.message || String(error)};
       await putMeta(reportRecord(report));
+      if (createdReport && !preflightComplete) {
+        const currentActive = await getMeta(ACTIVE_KEY);
+        if (currentActive && currentActive.reportId === report.reportId) await deleteMeta(ACTIVE_KEY);
+      }
       throw error;
     }
   }
@@ -1205,14 +1307,20 @@
       const value = manifest.store === 'captures'
         ? row && row.images && row.images[manifest.imageIndex] && row.images[manifest.imageIndex][manifest.field]
         : row && row[manifest.field];
-      const actual = value == null ? null : await sha256(value);
-      if (actual !== manifest.sha256) {
+      const actual = value == null ? {sha256: null, byteLength: 0, mimeType: ''} : await binaryIdentity(value);
+      if (actual.sha256 !== manifest.sha256
+        || actual.byteLength !== manifest.byteLength
+        || actual.mimeType !== manifest.mimeType) {
         errors.push({
           code: 'CHECKSUM_MISMATCH',
           store: manifest.store,
           id: manifest.id,
           field: manifest.field,
-          expected: manifest.sha256,
+          expected: {
+            sha256: manifest.sha256,
+            byteLength: manifest.byteLength,
+            mimeType: manifest.mimeType
+          },
           actual
         });
       }
@@ -1254,11 +1362,24 @@
       const rows = await migratedRows(storeName, reportId);
       await db.run(storeName, 'readwrite', (transaction) => {
         const store = transaction.objectStore(storeName);
-        for (const row of rows) store.delete(destinationKey(storeName, row));
+        for (const row of rows) {
+          const key = destinationKey(storeName, row);
+          const currentRequest = store.get(key);
+          currentRequest.onsuccess = () => {
+            const current = currentRequest.result;
+            if (current && current.migrationReportId === reportId) store.delete(key);
+          };
+        }
       });
     }
-    const globalSettings = await getMeta('phase2:global');
-    if (globalSettings && globalSettings.migrationReportId === reportId) await deleteMeta('phase2:global');
+    await db.run('meta', 'readwrite', (transaction) => {
+      const store = transaction.objectStore('meta');
+      const currentRequest = store.get('phase2:global');
+      currentRequest.onsuccess = () => {
+        const current = currentRequest.result;
+        if (current && current.migrationReportId === reportId) store.delete('phase2:global');
+      };
+    });
     const stored = reportFromRecord(await getMeta(`${REPORT_PREFIX}${reportId}`));
     if (stored) {
       stored.state = 'rolled-back';
