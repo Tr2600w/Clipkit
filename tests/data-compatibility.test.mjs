@@ -88,7 +88,7 @@ test('adapter hydrates a migrated entry into the exact legacy projection', async
     assert.deepEqual(JSON.parse(JSON.stringify(context.ClipKitLegacyAdapter.getEntries('default')[0])), {
       id: 'entry-uuid', date: '2026-08-18', pub: 'Bangkok Today', platform: 'Website',
       prValue: 150000, status: 'draft', duration: '', captureCount: 0,
-      fileName: '260818_Bangkok Today.pdf', logoLockedAssetId: null,
+      logoFile: '', type: '', fileName: '260818_Bangkok Today.pdf', logoLockedAssetId: null,
       createdAt: CREATED_AT, updatedAt: CREATED_AT
     });
   } finally {

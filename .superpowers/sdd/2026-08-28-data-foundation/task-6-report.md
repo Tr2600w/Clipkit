@@ -33,12 +33,17 @@ The review findings against `8071bae` were addressed in the app command boundary
 
 Regression tests were added to `tests/data-app-writes.test.mjs` for all three cases.
 
+## Fix Round 2
+
+The full-suite compatibility expectation in `tests/data-compatibility.test.mjs` now includes the intentional legacy adapter defaults for Entry `logoFile` and `type`, matching the Task 6 UI/export projection added in Fix Round 1.
+
 ## Tests
 
 - `/Users/driveigency/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/data-app-writes.test.mjs`
 - `/Users/driveigency/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/data-app-writes.test.mjs tests/data-save-coordinator.test.mjs tests/phase1-core.test.mjs`
+- `/Users/driveigency/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/*.test.mjs`
 
-Both commands passed before this report was written. They were rerun after the report update before committing.
+The focused Task 6 suite and full test suite passed before committing Fix Round 2.
 
 ## Commit
 
