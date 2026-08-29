@@ -2290,7 +2290,14 @@ async function addCaptureFiles(files){
   const list=[...(files||[])].filter(f=>String(f.type||'').startsWith('image/'));if(!list.length){toast('ไม่พบไฟล์ภาพ','err');return;}
   setCaptureStatus('กำลังเตรียมภาพ 0/'+list.length,'busy');
   try{
-    for(let i=0;i<list.length;i++){setCaptureStatus('กำลังเตรียมภาพ '+(i+1)+'/'+list.length,'busy');_captureImages.push(await prepareCaptureFile(list[i]));}
+    for(let i=0;i<list.length;i++){
+      setCaptureStatus('กำลังเตรียมภาพ '+(i+1)+'/'+list.length,'busy');
+      const item=await prepareCaptureFile(list[i]);
+      // Avoid reusing a capture id when a paste/import happens within the
+      // same millisecond or when stale browser data contains that id.
+      while(_captureImages.some(existing=>existing.id===item.id)) item.id='cap-'+Date.now()+'-'+Math.random().toString(36).slice(2,9);
+      _captureImages.push(item);
+    }
     await persistCaptureImages();setCaptureStatus('บันทึก '+list.length+' ภาพแล้ว','ok');
   }catch(err){setCaptureStatus(err.message,'err');}
   document.getElementById('captureInput').value='';
