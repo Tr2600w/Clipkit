@@ -642,6 +642,42 @@
     return report;
   }
 
+  async function putSafetySnapshot(report, snapshot) {
+    const key = `ck_idb_safety_${report.reportId}`;
+    try {
+      depsSafeStorage().setItem(key, JSON.stringify(snapshot));
+      report.safetySnapshotStorage = 'localStorage';
+      report.safetySnapshotKey = key;
+      return;
+    } catch (error) {
+      if (!isQuotaError(error)) throw error;
+      await putMeta({key: `migration:safety:${report.reportId}`, reportId: report.reportId, snapshot, createdAt: snapshot.createdAt});
+      report.safetySnapshotStorage = 'indexedDB';
+      report.safetySnapshotKey = `migration:safety:${report.reportId}`;
+      report.safetySnapshotWarning = 'localStorage quota exceeded; safety snapshot stored in IndexedDB';
+    }
+  }
+
+  function depsSafeStorage() {
+    const storage = global.safeLS || global.localStorage;
+    if (!storage || typeof storage.setItem !== 'function') throw new Error('Legacy localStorage is required');
+    return storage;
+  }
+
+  function isQuotaError(error) {
+    return error && (error.name === 'QuotaExceededError' || error.name === 'NS_ERROR_DOM_QUOTA_REACHED' || error.code === 22 || error.code === 1014 || /quota/i.test(String(error.message || '')));
+  }
+
+  async function getSafetySnapshot(reportId) {
+    const key = `ck_idb_safety_${reportId}`;
+    const storage = global.safeLS || global.localStorage;
+    const raw = storage && typeof storage.getItem === 'function' ? storage.getItem(key) : null;
+    if (raw) return {key, raw, snapshot: JSON.parse(raw), storage: 'localStorage'};
+    const stored = await getMeta(`migration:safety:${reportId}`);
+    if (stored && stored.snapshot) return {key: stored.key, raw: JSON.stringify(stored.snapshot), snapshot: stored.snapshot, storage: 'indexedDB'};
+    return null;
+  }
+
   function compositeEntryKey(item) {
     return `${item.projectId}:${text(item.legacyId)}`;
   }
@@ -1128,7 +1164,7 @@
         addedRows: 0
       };
       const snapshot = safetySnapshot(source, reportId, startedAt, migrationInventory);
-      deps.safeLS.setItem(`ck_idb_safety_${reportId}`, JSON.stringify(snapshot));
+      await putSafetySnapshot(report, snapshot);
       await putMeta(reportRecord(report));
       await putMeta({key: ACTIVE_KEY, reportId, startedAt});
       createdReport = true;
@@ -1427,21 +1463,19 @@
     const report = await latestReport();
     const status = await getStatus();
     if (!report || !status.rollbackEligible) throw codedError('ROLLBACK_WINDOW_EXPIRED','Rollback is unavailable outside the 30-day safety window');
-    const key = `ck_idb_safety_${report.reportId}`;
-    const storage = global.localStorage || global.safeLS;
-    const raw = storage && storage.getItem(key);
-    if (!raw) throw codedError('SAFETY_SNAPSHOT_MISSING','Safety snapshot is unavailable');
+    const snapshot = await getSafetySnapshot(report.reportId);
+    if (!snapshot) throw codedError('SAFETY_SNAPSHOT_MISSING','Safety snapshot is unavailable');
     await rollback(report.reportId);
     report.state = 'rollback-required'; report.rolledBackAt = new Date().toISOString();
     await putMeta(reportRecord(report));
-    return {reportId:report.reportId, state:'rollback-required', restoredSnapshotKey:key, legacyDatabases:LEGACY_DATABASES};
+    return {reportId:report.reportId, state:'rollback-required', restoredSnapshotKey:snapshot.key, legacyDatabases:LEGACY_DATABASES};
   }
   async function listLegacyCleanup() {
     const status = await getStatus();
     const report = status.reportId ? await getMeta(`${REPORT_PREFIX}${status.reportId}`) : null;
-    const snapshot = report && (global.localStorage || global.safeLS) && (global.localStorage || global.safeLS).getItem(`ck_idb_safety_${status.reportId}`);
+    const snapshot = report ? await getSafetySnapshot(status.reportId) : null;
     let keys = [];
-    try { keys = snapshot ? JSON.parse(snapshot).localStorage.map(row => row.key) : []; } catch (_) { keys = []; }
+    try { keys = snapshot ? snapshot.snapshot.localStorage.map(row => row.key) : []; } catch (_) { keys = []; }
     const eligible = Boolean(status.reportId && status.state === 'complete' && status.safetyWindowExpiresAt && Date.now() >= Date.parse(status.safetyWindowExpiresAt));
     return {available:eligible, eligible, reason:eligible ? null : status.state === 'safety-window' ? 'retention-window-active' : 'requires-expired-safety-window',
       reportId:status.reportId, expiresAt:status.safetyWindowExpiresAt, keys, databaseNames:[LEGACY_DATABASES.captures, ...LEGACY_DATABASES.phase2], requiresFreshBackup:true, typedConfirmation:'DELETE LEGACY DATA'};
