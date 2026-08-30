@@ -156,7 +156,15 @@ async function p2GetProjectAsset(project,kind){
   if(kind==='client')id=project.clientLogoAssetId||'';
   else if(project.agencyLogoMode==='asset')id=project.agencyLogoAssetId||'';
   else if(project.agencyLogoMode!=='none')id=p2Global().agencyLogoAssetId||'';
-  return id?p2StoreGet('assets',id):null;
+  if(id)return p2StoreGet('assets',id);
+  // If a project setting was not persisted (for example after a storage
+  // migration), recover the most recently uploaded project logo so the
+  // settings panel does not appear empty immediately after upload.
+  if(kind==='client'){
+    const recent=(await p2StoreAll('assets')).filter(asset=>asset.kind==='client').sort((a,b)=>String(b.updatedAt||b.createdAt).localeCompare(String(a.updatedAt||a.createdAt)))[0];
+    return recent||null;
+  }
+  return null;
 }
 
 async function importLogoFolder(event){
