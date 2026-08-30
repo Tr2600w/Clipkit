@@ -312,6 +312,9 @@ test('platform registry controls DB suffixes and file-name abbreviations',()=>{
     savePlatformRegistry(registry);
     testAssert.equal(normPlatform('Blue Sky'),'Bluesky');
     testAssert.equal(makeDbKey('Example Media','Bluesky'),'Example Media - BS');
+    testAssert.equal(makeFullKey('Example Media','Facebook'),'Example Media - FB');
+    testAssert.equal(makeFullKey('Example Media','Instagram'),'Example Media - IG');
+    testAssert.equal(makeFullKey('Example.com','Website'),'Example.com - WEB');
     testAssert.equal(buildOutputFileName('2026-08-06','Example Media','Bluesky',{
       name:'MMAD',filePattern:'{YYMMDD}_{Publication}-{Platform}.pdf'
     }),'260806_Example Media-BSKY.pdf');
@@ -329,6 +332,30 @@ test('platform registry controls DB suffixes and file-name abbreviations',()=>{
     savePlatformRegistry(edited);
     testAssert.equal(makeDbKey('Example Media','Bluesky'),'Example Media - BLUE');
   `);
+});
+
+test('URL metadata date extraction reads common published-date fields',()=>{
+  loadApp(`
+    testAssert.equal(extractPublishedDateFromHtml('<meta property="article:published_time" content="2026-08-29T10:30:00+07:00">'),'2026-08-29');
+    testAssert.equal(extractPublishedDateFromHtml('<script type="application/ld+json">{"datePublished":"2569-08-29T08:00:00+07:00"}</script>'),'2026-08-29');
+    testAssert.equal(extractPublishedDateFromHtml('<time datetime="29/08/2026">29 สิงหาคม 2569</time>'),'2026-08-29');
+  `);
+});
+
+test('Phase 2 capture placement clamps first and next page offsets separately',()=>{
+  const context=loadPhase2(`
+    const t=p2Transform({scalePercent:110,firstPageOffsetPt:999,nextPageOffsetPt:999,align:'right'});
+    testAssert.equal(t.scalePercent,100);
+    testAssert.equal(t.firstPageOffsetPt,480);
+    testAssert.equal(t.nextPageOffsetPt,200);
+    testAssert.equal(t.align,'right');
+    const layout=p2Layout('letter');
+    const canvas={width:1000,height:4000,getContext:()=>({getImageData:()=>({data:new Uint8Array(4000)})})};
+    const segments=p2PageSegments(canvas,[],true,layout,t);
+    testAssert.equal(segments[0].capacityPt,31);
+    testAssert.equal(segments[1].capacityPt,448);
+  `);
+  assert.ok(context);
 });
 
 test('legacy custom platforms migrate into the registry',()=>{
@@ -379,19 +406,21 @@ test('Phase 2 Letter naming and logo identities follow the Platform Registry',()
     testAssert.equal(P2_LETTER.media.w,128);
     testAssert.equal(P2_LETTER.client.w,128);
     testAssert.equal(P2_LETTER.content.w,500);
-    testAssert.equal(P2_LETTER.content.firstH,430);
-    testAssert.equal(P2_LETTER.content.nextH,560);
+    testAssert.equal(P2_LETTER.content.firstH,511);
+    testAssert.equal(P2_LETTER.content.nextTop,56);
+    testAssert.equal(P2_LETTER.content.nextH,648);
     testAssert.equal(p2Layout('a4').pageW,595.28);
     testAssert.equal(p2Layout('a4').pageH,841.89);
     testAssert.equal(p2Layout('a4').frame.w,P2_LETTER.frame.w);
     testAssert.equal(p2Layout('a4').content.w,P2_LETTER.content.w);
-    testAssert.equal(p2Layout('a4').content.firstH,430);
-    testAssert.equal(p2Layout('a4').content.nextH,560);
+    testAssert.equal(p2Layout('a4').content.firstH,561);
+    testAssert.equal(p2Layout('a4').content.nextTop,56);
+    testAssert.equal(p2Layout('a4').content.nextH,696);
     testAssert.equal(P2_BODY_FONT,'400 8.5px Arial,sans-serif');
     testAssert.equal(P2_LINK_FONT,'400 7.8px Arial,sans-serif');
     testAssert.equal(p2DpiForQuality('standard'),150);
     testAssert.equal(p2DpiForQuality('high'),300);
-    testAssert.deepEqual(p2Transform(),{cropLeft:0,cropRight:0,cropTop:0,cropBottom:0,rotation:0,breakRatios:[],scalePercent:100,align:'center',firstPageOffsetPt:0,cutVersion:0,manualCuts:[]});
+    testAssert.deepEqual(p2Transform(),{cropLeft:0,cropRight:0,cropTop:0,cropBottom:0,rotation:0,breakRatios:[],scalePercent:100,align:'center',firstPageOffsetPt:0,nextPageOffsetPt:80,cutVersion:0,manualCuts:[]});
     testAssert.equal('dataUrl' in p2Transform({id:'legacy',dataUrl:'data:image/png;base64,x'}),false);
     testAssert.deepEqual(p2Transform({breakRatios:[.5]}).manualCuts,[]);
     testAssert.deepEqual(p2Transform({cutVersion:2,manualCuts:[.7,.3]}).manualCuts,[.3,.7]);
@@ -401,7 +430,8 @@ test('Phase 2 Letter naming and logo identities follow the Platform Registry',()
     testAssert.equal(p2Transform({scalePercent:120,align:'right'}).scalePercent,100);
     testAssert.equal(p2Transform({scalePercent:75}).align,'center');
     testAssert.equal(p2Transform({firstPageOffsetPt:24}).firstPageOffsetPt,24);
-    testAssert.equal(p2Transform({firstPageOffsetPt:999}).firstPageOffsetPt,200);
+    testAssert.equal(p2Transform({firstPageOffsetPt:999}).firstPageOffsetPt,480);
+    testAssert.equal(p2Transform({nextPageOffsetPt:999}).nextPageOffsetPt,200);
     testAssert.equal(p2DrawWidthPt({width:2000},P2_LETTER,{scalePercent:100}),500);
     testAssert.equal(p2DrawWidthPt({width:2000},P2_LETTER,{scalePercent:75}),375);
     testAssert.equal(p2DrawWidthPt({width:2000},P2_LETTER,{scalePercent:50}),250);
@@ -420,24 +450,29 @@ test('Phase 2 Letter naming and logo identities follow the Platform Registry',()
     testAssert.equal(drawArgs[7],375);
     p2DrawSegment({drawImage(...args){drawArgs=args;}},{width:2000},{y:0,height:800},true,1,P2_LETTER,{scalePercent:75,align:'right',firstPageOffsetPt:24});
     testAssert.equal(drawArgs[6],208);
-    const segmentCanvas={width:1200,height:2400,getContext(){return{getImageData(){throw new Error('no pixels');}}}};
+    p2DrawSegment({drawImage(...args){drawArgs=args;}},{width:2000},{y:0,height:800},false,1,P2_LETTER,{scalePercent:75,align:'right',nextPageOffsetPt:24});
+    testAssert.equal(drawArgs[6],80);
+    const segmentCanvas={width:1200,height:5000,getContext(){return{getImageData(){throw new Error('no pixels');}}}};
     testAssert.equal(p2AutoSegments(segmentCanvas,true,P2_LETTER,{scalePercent:50}).length<p2AutoSegments(segmentCanvas,true,P2_LETTER,{scalePercent:100}).length,true);
     const fitsFirst={width:1200,height:1000,getContext(){return{getImageData(){throw new Error('no pixels');}}}};
     testAssert.equal(p2PageSegments(fitsFirst,[.5],true,P2_LETTER,{scalePercent:100}).length,1);
-    const tinyTail={width:1200,height:1080,getContext(){return{getImageData(){throw new Error('no pixels');}}}};
+    const tinyTail={width:1200,height:1350,getContext(){return{getImageData(){throw new Error('no pixels');}}}};
     const tinyPages=p2PageSegments(tinyTail,[],true,P2_LETTER,{scalePercent:100});
     testAssert.equal(tinyPages.length,2);
-    testAssert.equal(tinyPages[1].height*500/1200<=P2_LETTER.content.nextH*.12,true);
-    const offsetPages=p2PageSegments(fitsFirst,[],true,P2_LETTER,{scalePercent:100,firstPageOffsetPt:24});
+    testAssert.equal(tinyPages[1].height*500/1200<=P2_LETTER.content.nextH*.3,true);
+    const offsetPages=p2PageSegments({width:1200,height:1200,getContext(){return{getImageData(){throw new Error('no pixels');}}}},[],true,P2_LETTER,{scalePercent:100,firstPageOffsetPt:24});
     testAssert.equal(offsetPages.length,2);
-    testAssert.equal(offsetPages[0].capacityPt,406);
-    const manualPages=p2PageSegments(segmentCanvas,[.3],true,P2_LETTER,{scalePercent:100});
+    testAssert.equal(offsetPages[0].capacityPt,487);
+    const noHeaderPages=p2PageSegments(fitsFirst,[],false,P2_LETTER,{scalePercent:100,nextPageOffsetPt:24});
+    testAssert.equal(noHeaderPages[0].capacityPt,624);
+    const manualPages=p2PageSegments(segmentCanvas,[.18],true,P2_LETTER,{scalePercent:100});
     testAssert.equal(manualPages[0].cutMode,'manual');
-    testAssert.equal(manualPages[0].height,720);
-    const whiteData=new Array(1200*4).fill(255),whiteCanvas={width:1200,height:2600,getContext(){return{getImageData(){return{data:whiteData};}}}};
-    const whitespaceCut=p2PaperBreak(whiteCanvas,0,1032,2600,1344);
-    testAssert.equal(whitespaceCut<1032&&whitespaceCut>=1032-Math.round(1032*.04),true);
-    testAssert.equal(p2PaperBreak({...whiteCanvas,height:1100},0,1032,1100,1344),1032);
+    testAssert.equal(manualPages[0].height,900);
+    const whiteData=new Array(1200*4).fill(255),whiteCanvas={width:1200,height:3000,getContext(){return{getImageData(){return{data:whiteData};}}}};
+    const whitespaceCut=p2PaperBreak(whiteCanvas,0,1032,3000,1344);
+    testAssert.equal(whitespaceCut<1032&&whitespaceCut>=1032-Math.round(1032*.02),true);
+    testAssert.equal(Math.abs(p2PaperBreak({...whiteCanvas,height:1100},0,1032,1100,1344)-1032)<=1,true);
+    testAssert.equal(p2PaperBreak(whiteCanvas,0,1032,1400,1344),1032);
     testAssert.equal(p2PageSegments({width:1200,height:1200,getContext(){return{getImageData(){throw new Error('no pixels');}}}},[],false,P2_LETTER,{scalePercent:100}).length,1);
     testAssert.equal(p2CanVectorText('PUBLICATION: Example - FB'),true);
   `);
