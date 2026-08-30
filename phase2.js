@@ -178,10 +178,12 @@ async function importLogoFolder(event){
 async function uploadProjectAsset(event,kind){
   const file=event.target.files&&event.target.files[0];event.target.value='';if(!file)return;
   try{
-    const asset=await p2AssetFromFile(file,kind);await p2StorePut('assets',asset);
+    const asset=await p2AssetFromFile(file,kind);const saved=await p2StorePut('assets',asset);const persisted=saved||asset;
     if(kind==='agency'&&!p2Global().agencyLogoAssetId)p2SaveGlobal({agencyLogoAssetId:asset.id});
     const projects=getAllProjects(),idx=projects.findIndex(p=>p.id===_activeProj);
-    if(idx>=0){if(kind==='client')projects[idx].clientLogoAssetId=asset.id;else{projects[idx].agencyLogoAssetId=asset.id;projects[idx].agencyLogoMode='asset';}saveProjectList(projects);}
+    if(idx>=0){if(kind==='client')projects[idx].clientLogoAssetId=persisted.id;else{projects[idx].agencyLogoAssetId=persisted.id;projects[idx].agencyLogoMode='asset';}saveProjectList(projects);}
+    const preview=document.getElementById(kind==='client'?'cfgClientLogoPreview':'cfgAgencyLogoPreview');
+    if(preview&&persisted.dataUrl)preview.innerHTML='<img src="'+escAttr(persisted.dataUrl)+'" alt="โลโก้">';
     await p2PopulateSettings();toast('✓ บันทึกโลโก้แล้ว','ok');
   }catch(err){toast(err.message,'err');}
 }
