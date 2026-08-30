@@ -29,6 +29,15 @@ class MemoryStorage {
   removeItem(key) { this.values.delete(key); }
 }
 
+class QuotaStorage extends MemoryStorage {
+  setItem(key, value) {
+    if (String(key).startsWith('ck_idb_safety_')) {
+      throw Object.assign(new Error('exceeded the quota'), {name: 'QuotaExceededError', code: 22});
+    }
+    super.setItem(key, value);
+  }
+}
+
 async function seedDatabase(indexedDB, name, stores, version = 2) {
   const request = indexedDB.open(name, version);
   request.onupgradeneeded = () => {
@@ -94,7 +103,7 @@ function fixtureStorage(overrides = {}) {
 
 async function fixture(tag, options = {}) {
   const {context, cleanup} = await freshDatabase(tag);
-  const safeLS = fixtureStorage(options.storage);
+  const safeLS = options.safeLS || fixtureStorage(options.storage);
   context.safeLS = safeLS;
   context.localStorage = safeLS;
   await seedDatabase(context.indexedDB, 'clipkit-captures', {
@@ -433,6 +442,28 @@ test('safety snapshot preserves raw storage errors and checksums every binary re
   assert.equal(snapshot.binaryManifest.some((item) => item.field === 'blob' && item.sha256), true);
   assert.equal(JSON.stringify(snapshot).includes('logo-bytes'), false);
   await corrupt.cleanup();
+});
+
+test('migration falls back to IndexedDB safety snapshot when localStorage quota is exceeded', async () => {
+  const safeLS = new QuotaStorage(fixtureStorage().values ? Object.fromEntries(fixtureStorage().values) : {});
+  const {context, cleanup} = await fixture('migration-quota-safety', {safeLS});
+  try {
+    let sequence = 700;
+    const report = await context.ClipKitMigration.migrate({
+      legacy: {safeLS, indexedDB: context.indexedDB},
+      uuid: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`,
+      now: () => '2026-08-28T00:00:00.000Z'
+    });
+    assert.equal(report.state, 'verified');
+    assert.equal(report.safetySnapshotStorage, 'indexedDB');
+    assert.equal(safeLS.getItem(`ck_idb_safety_${report.reportId}`), null);
+    const stored = await context.ClipKitDB.run('meta', 'readonly', (tx) => context.ClipKitDB.request(tx.objectStore('meta').get(`migration:safety:${report.reportId}`)));
+    assert.equal(stored.snapshot.reportId, report.reportId);
+    const cleanupPlan = await context.ClipKitMigration.listLegacyCleanup();
+    assert.equal(cleanupPlan.keys.includes('ck_projects'), true);
+  } finally {
+    await cleanup();
+  }
 });
 
 test('verification hashes every binary field and detects independent data-url corruption', async () => {
