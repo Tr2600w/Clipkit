@@ -45,6 +45,37 @@
     return dateComparison || compareCreatedAt(first, second);
   }
 
+  function sheetPlatformCode(platformId) {
+    const value = String(platformId || '').trim();
+    const id = value.toLowerCase();
+    const builtins = {
+      web: 'WEB',
+      website: 'WEB',
+      facebook: 'FB',
+      fb: 'FB',
+      instagram: 'IG',
+      ig: 'IG',
+      x: 'X',
+      twitter: 'X',
+      youtube: 'YT',
+      yt: 'YT',
+      tiktok: 'TK',
+      tv: 'TV',
+      line: 'LINE',
+      'line-today': 'LINE',
+      lemon8: 'L8',
+      threads: 'Threads',
+      msn: 'MSN'
+    };
+    return builtins[id] || value || 'WEB';
+  }
+
+  function sheetFullKey(publication, platformId) {
+    const pub = String(publication || '').trim();
+    const code = sheetPlatformCode(platformId);
+    return pub ? `${pub} - ${code}` : '';
+  }
+
   function dependencies(options) {
     const source = options || {};
     return {
@@ -656,7 +687,7 @@
     return {exportedAt, projectRevision: rows.reduce((n,e)=>Math.max(n,e.recordVersion||0),0), mode,
       entries: selected.map((e) => ({...e, revision:e.recordVersion||1, lastExportedAt:e.lastExportedAt||null,
         clipkit_entry_id:e.id, clipkit_entry_revision:e.recordVersion||1, clipkit_project_id:e.projectId,
-        clipkit_last_exported_at:e.lastExportedAt||null}))};
+        clipkit_last_exported_at:e.lastExportedAt||null, Full_Key: sheetFullKey(e.publicationDisplayOverride || e.publicationId, e.platformId)}))};
   }
   async function inspectSheetsImport(rows) {
     const seen = new Set(), result = {rows:[], counts:{new:0,unchanged:0,changed:0,missing:0,invalid:0,conflict:0}, conflicts:[]};

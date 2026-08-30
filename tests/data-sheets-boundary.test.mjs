@@ -12,7 +12,7 @@ async function setup(tag='sheets') {
 
 test('Sheets export includes stable identity and append filters previously successful revisions', async()=>{
   const x=await setup('sheets-export'); const c=x.context;
-  let out=await c.buildSheetsExport('p1',{mode:'append'}); assert.equal(out.entries.length,1); assert.equal(out.entries[0].clipkit_entry_id,'e1');
+  let out=await c.buildSheetsExport('p1',{mode:'append'}); assert.equal(out.entries.length,1); assert.equal(out.entries[0].clipkit_entry_id,'e1'); assert.equal(out.entries[0].Full_Key,'Media - WEB');
   await c.ClipKitRepository.exports.create({id:'job1',sheetProjectId:'p1',status:'succeeded',entries:[{id:'e1',revision:2}]});
   out=await c.buildSheetsExport('p1',{mode:'append'}); assert.equal(out.entries.length,0); await x.cleanup();
 });

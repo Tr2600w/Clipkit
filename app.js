@@ -564,6 +564,10 @@ function getPlatformCode(platform,kind='db'){
 function makeDbKey(pub,platform){
   const code=getPlatformCode(platform,'db');return code?String(pub||'').trim()+' - '+code:String(pub||'').trim();
 }
+function makeFullKey(pub,platform){
+  const code=getPlatformCode(platform,'file')||getPlatformCode(platform,'db')||String(platform||'').trim()||'WEB';
+  return String(pub||'').trim()+(code?' - '+code:'');
+}
 function activePlatforms(){return getPlatformRegistry().filter(p=>p.active);}
 const SOCIAL_DOMAINS={'instagram.com':'Instagram','facebook.com':'Facebook','fb.com':'Facebook','youtube.com':'YouTube','youtu.be':'YouTube','tiktok.com':'TikTok','twitter.com':'X','x.com':'X','line.me':'LINE TODAY','lemon8-app.com':'Lemon8','lemon8.com':'Lemon8'};
 const STRIP_TLDS=['.co.th','.com.th','.or.th','.in.th','.ac.th','.go.th','.mi.th','.net.th','.com','.net','.org','.edu','.gov','.io','.me','.tv','.th'];
@@ -915,6 +919,51 @@ function _parseDateFromUrl(path){
   if(m){const y=m[1],mo=m[2],dy=m[3];
     if(+mo>=1&&+mo<=12&&+dy>=1&&+dy<=31)return y+'-'+mo+'-'+dy;}
   return '';
+}
+function _normalizeDetectedDate(value){
+  const raw=String(value||'').trim();if(!raw)return '';
+  let m=raw.match(/(25\d{2}|20\d{2})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
+  if(!m)m=raw.match(/(\d{1,2})[-\/.](\d{1,2})[-\/.](25\d{2}|20\d{2})/);
+  if(m){
+    const dayFirst=m[3].length===4,year=Number(dayFirst?m[3]:m[1]),month=Number(m[2]),day=Number(dayFirst?m[1]:m[3]);
+    const ce=year>=2500?year-543:year;
+    if(ce>=2000&&ce<=2099&&month>=1&&month<=12&&day>=1&&day<=31)return ce+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+  }
+  const d=new Date(raw);
+  if(!Number.isNaN(d.getTime()))return d.toISOString().slice(0,10);
+  return '';
+}
+function extractPublishedDateFromHtml(html){
+  const text=String(html||'');if(!text)return '';
+  const metaPatterns=[
+    /<(?:meta|[^>]+)\s+[^>]*(?:property|name|itemprop)=["'](?:article:published_time|datePublished|date:published|pubdate|publishdate|publish_date|og:published_time)["'][^>]*content=["']([^"']+)["'][^>]*>/i,
+    /<(?:meta|[^>]+)\s+[^>]*content=["']([^"']+)["'][^>]*(?:property|name|itemprop)=["'](?:article:published_time|datePublished|date:published|pubdate|publishdate|publish_date|og:published_time)["'][^>]*>/i,
+    /<time[^>]*datetime=["']([^"']+)["'][^>]*>/i
+  ];
+  for(const pattern of metaPatterns){const match=text.match(pattern),date=match&&_normalizeDetectedDate(match[1]);if(date)return date;}
+  const ldScripts=[...text.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+  for(const script of ldScripts){
+    const body=script[1].replace(/<!--|-->/g,'').trim();
+    try{
+      const parsed=JSON.parse(body),queue=Array.isArray(parsed)?[...parsed]:[parsed];
+      while(queue.length){const item=queue.shift();if(!item||typeof item!=='object')continue;const date=_normalizeDetectedDate(item.datePublished||item.dateCreated||item.uploadDate);if(date)return date;for(const value of Object.values(item))if(value&&typeof value==='object')queue.push(value);}
+    }catch{
+      const match=body.match(/"datePublished"\s*:\s*"([^"]+)"/i),date=match&&_normalizeDetectedDate(match[1]);if(date)return date;
+    }
+  }
+  return '';
+}
+let _urlDateFetchSeq=0;
+async function trackPublishedDateFromUrl(url){
+  const seq=++_urlDateFetchSeq,dateEl=document.getElementById('fDate');if(!url||!dateEl||(!_autoFilledDate&&dateEl.value))return;
+  try{
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),4500);
+    const res=await fetch(url.startsWith('http')?url:'https://'+url,{mode:'cors',signal:controller.signal,credentials:'omit'});
+    clearTimeout(timer);
+    if(seq!==_urlDateFetchSeq||!res.ok)return;
+    const date=extractPublishedDateFromHtml(await res.text());
+    if(date&&(!dateEl.value||_autoFilledDate)){dateEl.value=date;_autoFilledDate=true;_showUrlHint(null,null,'#059669','#059669','📅 จับวันที่จากหน้าเว็บ: '+date);upAuto();renderValidation();}
+  }catch{}
 }
 
 function parseUrl(url){
@@ -2102,6 +2151,7 @@ function onUrl(){
   }else{
     _hideUrlHint();
   }
+  if(!_urlDate)trackPublishedDateFromUrl(url);
   // Auto-clean URL (strip tracking params)
   if(url){
     const norm=normalizeUrl(url);
@@ -2268,7 +2318,8 @@ async function prepareCaptureFile(file){
   const size=captureTargetSize(img.naturalWidth,img.naturalHeight);
   const canvas=document.createElement('canvas');canvas.width=size.width;canvas.height=size.height;
   canvas.getContext('2d').drawImage(img,0,0,size.width,size.height);
-  return{id:'cap-'+Date.now()+'-'+Math.random().toString(36).slice(2,7),name:file.name||'clipboard.png',type:'image/jpeg',dataUrl:canvas.toDataURL('image/jpeg',.9),width:size.width,height:size.height,createdAt:new Date().toISOString()};
+  const captureId='cap-'+(typeof crypto!=='undefined'&&crypto&&typeof crypto.randomUUID==='function'?crypto.randomUUID():Date.now()+'-'+Math.random().toString(36).slice(2,11));
+  return{id:captureId,name:file.name||'clipboard.png',type:'image/jpeg',dataUrl:canvas.toDataURL('image/jpeg',.9),width:size.width,height:size.height,createdAt:new Date().toISOString()};
 }
 async function openCapture(entryId){
   const entry=entryById(entryId);if(!entry)return;
@@ -2983,7 +3034,7 @@ async function exportExcelData(data){
   const hdrs=['Project','วันที่','URL','ชื่อสื่อ','Platform','Logo_File','Full_Key','PR_Value','ประเภท','Headline','PDF_FileName','หมายเหตุ','Work_Status','Data_Status','Created_At','Updated_At'];
   const rows=sorted.map(e=>({
     'Project':projectName,'วันที่':excelDate(e.date),'URL':e.url||'','ชื่อสื่อ':e.pub||'','Platform':e.platform||'',
-    'Logo_File':e.logoFile||'','Full_Key':e.fullKey||'','PR_Value':e.prValue||0,
+    'Logo_File':e.logoFile||'','Full_Key':makeFullKey(e.pub,e.platform),'PR_Value':e.prValue||0,
     'ประเภท':e.type||'','Headline':e.headline||'','PDF_FileName':buildOutputFileName(e.date,e.pub,e.platform,project,e.duration),'หมายเหตุ':e.remark||'',
     'Work_Status':statusMeta(e.status).label,
     'Data_Status':!e.prValue?'ไม่พบ DB':(!e.date||!e.pub||!e.platform)?'กรอกไม่ครบ':'พร้อม',
@@ -3001,18 +3052,18 @@ async function exportExcelData(data){
 
   // ── Sheet 2: MailMerge (เฉพาะ field ที่ใช้ใน Word) ──
   // Field names: สั้น ไม่มีช่องว่าง ใช้กับ «field» ใน Word ได้เลย
-  const mmHdrs=['Project','Publication','PR_Value','Date','Link','Publication_Logo','Platform','Type','Headline','PDF_FileName','Remark','Work_Status'];
+  const mmHdrs=['Project','Publication','Full_Key','PR_Value','Date','Link','Publication_Logo','Platform','Type','Headline','PDF_FileName','Remark','Work_Status'];
   const mmRows=sorted.map(e=>({
-    'Project':projectName,'Publication':e.pub||'','PR_Value':e.prValue||0,'Date':excelDate(e.date),'Link':e.url||'',
+    'Project':projectName,'Publication':e.pub||'','Full_Key':makeFullKey(e.pub,e.platform),'PR_Value':e.prValue||0,'Date':excelDate(e.date),'Link':e.url||'',
     'Publication_Logo':e.logoFile||'','Platform':e.platform||'','Type':e.type||'','Headline':e.headline||'',
     'PDF_FileName':buildOutputFileName(e.date,e.pub,e.platform,project,e.duration),'Remark':e.remark||'','Work_Status':statusMeta(e.status).label
   }));
   const wsMM=XLSX.utils.json_to_sheet(mmRows,{header:mmHdrs});
-  wsMM['!cols']=[{wch:18},{wch:28},{wch:14},{wch:12},{wch:44},{wch:26},{wch:14},{wch:12},{wch:36},{wch:34},{wch:22},{wch:14}];
-  wsMM['!autofilter']={ref:'A1:L'+(mmRows.length+1)};
+  wsMM['!cols']=[{wch:18},{wch:28},{wch:32},{wch:14},{wch:12},{wch:44},{wch:26},{wch:14},{wch:12},{wch:36},{wch:34},{wch:22},{wch:14}];
+  wsMM['!autofilter']={ref:'A1:M'+(mmRows.length+1)};
   mmRows.forEach((_,i)=>{
-    const dateCell=wsMM['D'+(i+2)];if(dateCell)dateCell.z='dd/mm/yyyy';
-    const prCell=wsMM['C'+(i+2)];if(prCell)prCell.z='#,##0';
+    const dateCell=wsMM['E'+(i+2)];if(dateCell)dateCell.z='dd/mm/yyyy';
+    const prCell=wsMM['D'+(i+2)];if(prCell)prCell.z='#,##0';
   });
   styleSheetHeader(wsMM,mmHdrs);
   XLSX.utils.book_append_sheet(wb,wsMM,'MailMerge');
