@@ -532,10 +532,15 @@ function getPlatformRegistry(){
   // A freshly migrated/cleared database may legitimately have no custom
   // platform rows yet.  Do not let that empty projection hide the built-in
   // registry required by the entry form; once rows exist, the hydrated
-  // projection remains authoritative (it may include inactive/custom rows).
+  // projection overrides matching defaults and contributes custom rows.
   if(_legacyHydratedState){
     const hydrated=Array.isArray(_legacyHydratedState.platforms)?_legacyHydratedState.platforms:[];
-    return hydrated.length?cloneLegacyValue(hydrated):DEFAULT_PLATFORM_REGISTRY.map(normalizePlatformRecord);
+    const byId=new Map(DEFAULT_PLATFORM_REGISTRY.map(raw=>{const p=normalizePlatformRecord(raw);return[p.id,p];}));
+    hydrated.forEach(raw=>{
+      const p=normalizePlatformRecord(raw);if(!p.name)return;
+      const base=byId.get(p.id);byId.set(p.id,base?{...base,...p,builtin:base.builtin||p.builtin}:p);
+    });
+    return cloneLegacyValue([...byId.values()]);
   }
   if(_platformRegistryCache)return _platformRegistryCache;
   const stored=readJSON(PLATFORM_REGISTRY_KEY,[]);

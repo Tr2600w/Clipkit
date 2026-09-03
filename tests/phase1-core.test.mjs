@@ -129,6 +129,26 @@ test('bootstrap keeps built-in platforms available when hydrated database has no
   `,context);
 });
 
+test('hydrated custom platform rows do not hide the built-in registry',async()=>{
+  const context=loadApp();
+  context.ClipKitMigration.migrate=async()=>({state:'verified',verification:{ok:true}});
+  context.ClipKitLegacyAdapter.hydrate=async projectId=>({
+    activeProjectId:projectId,
+    projects:[{id:'default',name:'Default'}],
+    entries:[],mediaRows:[],usernameMap:{},
+    platforms:[{id:'instargram',name:'Instargram',dbCode:'IG Story',fileCode:'IG Story',builtin:false,active:true,aliases:[]}]
+  });
+  await vm.runInContext('bootstrapClipKit()',context);
+  vm.runInContext(`
+    const names=getPlatformRegistry().map(platform=>platform.name);
+    testAssert.equal(names.includes('Facebook'),true);
+    testAssert.equal(names.includes('Instagram'),true);
+    testAssert.equal(names.includes('Website'),true);
+    testAssert.equal(names.includes('TV'),true);
+    testAssert.equal(names.includes('Instargram'),true);
+  `,context);
+});
+
 test('bootstrap wires every hydrated projection into legacy read sources',async()=>{
   const context=loadApp('',{
     ck_active_proj:'idb-project',
@@ -161,7 +181,9 @@ test('bootstrap wires every hydrated projection into legacy read sources',async(
     testAssert.equal(JSON.stringify(getAllProjects().map(project=>project.id)),JSON.stringify(['idb-project','second-project']));
     testAssert.equal(JSON.stringify(getCustom().map(row=>row.pub)),JSON.stringify(['IndexedDB Custom']));
     testAssert.equal(JSON.stringify(getImported().map(row=>row.pub)),JSON.stringify(['IndexedDB Imported']));
-    testAssert.equal(JSON.stringify(getPlatformRegistry().map(platform=>platform.name)),JSON.stringify(['Fedi']));
+    testAssert.equal(getPlatformRegistry().some(platform=>platform.name==='Website'),true);
+    testAssert.equal(getPlatformRegistry().some(platform=>platform.name==='Fedi'),true);
+    testAssert.equal(getPlatformRegistry().filter(platform=>!platform.builtin).length,1);
     testAssert.equal(JSON.stringify(getUsernameMap()),JSON.stringify({'fedi:idb':{username:'idb',platform:'Fedi',pub:'IndexedDB Custom'}}));
     testAssert.equal(DB.some(row=>row.pub==='IndexedDB Custom'&&row.platform==='Fedi'),true);
     testAssert.equal(DB.some(row=>row.pub==='Stale custom'),false);
