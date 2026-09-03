@@ -499,13 +499,13 @@ function p2HeaderVectors(ctx,entry,values,project,layout=P2_LETTER){
     {text:'PUBLICATION:',x:labelX,y:106,size:8.5},{text:'DATE:',x:labelX,y:121.5,size:8.5},{text:'LINK:',x:labelX,y:137.5,size:8.5},{text:'PR VALUE:',x:prLabelX,y:106,size:8.5},
     {text:publication,x:dataX,y:106,size:8.5},{text:p2FormatDate(values.date),x:dataX,y:121.5,size:8.5},{text:p2FormatPr(values.prValue,project.prFormat||'number'),x:prDataX,y:106,size:8.5}
   ];
-  ctx.font=P2_LINK_FONT;p2WrapChars(ctx,values.link,L.frame.x+L.frame.w-14-dataX,2).forEach((line,i)=>items.push({text:line,x:dataX,y:137.5+i*9,size:7.8}));return items;
+  ctx.font=P2_LINK_FONT;p2WrapChars(ctx,values.link,L.frame.x+L.frame.w-14-dataX,2).forEach((line,i)=>items.push({text:line,x:dataX,y:137.5+i*9,size:7.8,font:P2_LINK_FONT,vector:false}));return items;
 }
 async function p2DrawHeader(ctx,entry,values,assets,project,layout=P2_LETTER,drawText=true){
   const L=layout,t=L.title,dx=L.frame.x-P2_LETTER.frame.x,transparent=Boolean(project.logoWhiteTransparent);ctx.save();ctx.strokeStyle='#111';ctx.lineWidth=1.5;ctx.strokeRect(L.frame.x,L.frame.y,L.frame.w,L.frame.h);
   const title=project.newsTitleOverride||p2Global().title||'NEWSCLIPPING';ctx.fillStyle='#050505';ctx.fillRect(t.x,t.y,t.w,t.h);ctx.fillStyle='#fff';ctx.font='700 11.04px "Century Gothic",Arial,sans-serif';const titleSpacing=2.2,textWidth=[...title].reduce((s,c)=>s+ctx.measureText(c).width+titleSpacing,0)-titleSpacing,p2TitleX=t.x+(t.w-textWidth)/2;p2DrawSpaced(ctx,title,p2TitleX,t.y+10.9,titleSpacing);
   await p2DrawAsset(ctx,assets.media,L.media.x,L.media.y,L.media.w,L.media.h,'left',transparent);await p2DrawAsset(ctx,assets.client,L.client.x,L.client.y,L.client.w,L.client.h,'right',transparent);
-  const vectors=p2HeaderVectors(ctx,entry,values,project,L);ctx.fillStyle='#111';for(const item of vectors){if(drawText||!p2CanVectorText(item.text)){ctx.font='400 '+item.size+'px Arial,sans-serif';ctx.fillText(item.text,item.x,item.y);}}ctx.restore();return vectors.filter(item=>p2CanVectorText(item.text));
+  const vectors=p2HeaderVectors(ctx,entry,values,project,L);ctx.fillStyle='#111';for(const item of vectors){if(drawText||item.vector===false||!p2CanVectorText(item.text)){ctx.font=item.font||('400 '+item.size+'px Arial,sans-serif');ctx.fillText(item.text,item.x,item.y);}}ctx.restore();return vectors.filter(item=>item.vector!==false&&p2CanVectorText(item.text));
 }
 function p2TailPixels(remaining,nextCapacity){if(remaining<=0)return 0;const value=remaining%nextCapacity;return value<1?nextCapacity:value;}
 function p2TinyTailRatio(){return .3;}

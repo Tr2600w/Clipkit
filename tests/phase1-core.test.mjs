@@ -259,12 +259,34 @@ test('Phase 2 storage helpers route binary assets, captures, and directory confi
   })()`,context);
 });
 
-test('bootstrap rejects migration failure and renders a blocking recovery panel',async()=>{
+test('bootstrap keeps the app usable when migration verification fails',async()=>{
   const context=loadApp();
   context.console={...console,error:()=>{}};
   context.ClipKitMigration.migrate=async()=>{throw new Error('migration failed');};
-  await assert.rejects(vm.runInContext('bootstrapClipKit()',context),/migration failed/);
-  assert.equal(context.document.getElementById('clipkitRecoveryPanel').role,'alertdialog');
+  context.ClipKitLegacyAdapter.hydrate=async projectId=>({
+    activeProjectId:projectId,
+    projects:[{id:'default',name:'Default'}],
+    entries:[{id:'entry-after-migration-error',date:'2026-09-03',pub:'Example',platform:'Website',status:'draft'}]
+  });
+  await vm.runInContext('bootstrapClipKit()',context);
+  vm.runInContext("testAssert.equal(entries[0].id,'entry-after-migration-error')",context);
+  assert.equal(context.document.getElementById('clipkitRecoveryPanel'),null);
+});
+
+test('header keeps the full URL in the original canvas font instead of mixing PDF fonts',()=>{
+  const context=loadPhase2();
+  vm.runInContext(`
+    const headerItems=p2HeaderVectors(
+      {font:'',measureText:value=>({width:String(value).length*4})},
+      {pub:'Inzpy',platform:'Instagram'},
+      {publication:'Inzpy',date:'2026-09-02',link:'https://www.instagram.com/p/example',prValue:150000},
+      {prFormat:'number'},
+      P2_LETTER
+    );
+    const urlItem=headerItems.find(item=>item.text==='https://www.instagram.com/p/example');
+    testAssert.equal(urlItem.vector,false);
+    testAssert.equal(urlItem.font,P2_LINK_FONT);
+  `,context);
 });
 
 test('Phase 1 core safety and naming rules',()=>{
