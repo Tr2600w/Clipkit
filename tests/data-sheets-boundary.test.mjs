@@ -17,6 +17,14 @@ test('Sheets export includes stable identity and append filters previously succe
   out=await c.buildSheetsExport('p1',{mode:'append'}); assert.equal(out.entries.length,0); await x.cleanup();
 });
 
+test('Sheets export uses Tiktok consistently in Full_Key', async()=>{
+  const x=await setup('sheets-tiktok'); const c=x.context;
+  await c.ClipKitRepository.entries.put({id:'e2',projectId:'p1',publicationId:'KhonkaenPOP',platformId:'tiktok',publishedDate:'2026-09-06',prValueSnapshot:100,recordVersion:1,createdAt:'2026-09-06',updatedAt:'2026-09-06',deletedAt:null});
+  const out=await c.buildSheetsExport('p1',{mode:'append'});
+  assert.equal(out.entries.find(row=>row.id==='e2').Full_Key,'KhonkaenPOP - Tiktok');
+  await x.cleanup();
+});
+
 test('Sheets import inspects conflicts and applies accepted rows atomically with provenance/audit', async()=>{
   const x=await setup('sheets-import'); const c=x.context;
   const inspection=await c.inspectSheetsImport([{clipkit_entry_id:'e1',clipkit_entry_revision:1,clipkit_project_id:'p1',publicationId:'Changed',platformId:'web',publishedDate:'2026-08-01',prValueSnapshot:100},{clipkit_entry_id:'e2',clipkit_entry_revision:1,clipkit_project_id:'p1',publicationId:'New',platformId:'web',publishedDate:'2026-08-02',prValueSnapshot:50}]);
