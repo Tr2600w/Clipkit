@@ -295,7 +295,7 @@ test('bootstrap keeps the app usable when migration verification fails',async()=
   assert.equal(context.document.getElementById('clipkitRecoveryPanel'),null);
 });
 
-test('header keeps the full URL in the original canvas font instead of mixing PDF fonts',()=>{
+test('header renders the full URL as PDF text like the other labels',()=>{
   const context=loadPhase2();
   vm.runInContext(`
     const headerItems=p2HeaderVectors(
@@ -306,7 +306,8 @@ test('header keeps the full URL in the original canvas font instead of mixing PD
       P2_LETTER
     );
     const urlItem=headerItems.find(item=>item.text==='https://www.instagram.com/p/example');
-    testAssert.equal(urlItem.vector,false);
+    testAssert.notEqual(urlItem.vector,false);
+    testAssert.equal(p2CanVectorText(urlItem.text),true);
     testAssert.equal(urlItem.font,P2_LINK_FONT);
   `,context);
 });
@@ -526,6 +527,26 @@ test('Phase 2 Letter naming and logo identities follow the Platform Registry',()
     testAssert.equal(p2PageSegments({width:1200,height:1200,getContext(){return{getImageData(){throw new Error('no pixels');}}}},[],false,P2_LETTER,{scalePercent:100}).length,1);
     testAssert.equal(p2CanVectorText('PUBLICATION: Example - FB'),true);
   `);
+});
+
+test('standard output preserves logo pages at 300 DPI with lossless encoding',async()=>{
+  const context=loadPhase2();
+  await vm.runInContext(`(async()=>{
+    p2FindMediaLogo=async()=>({dataUrl:'logo'});
+    p2GetProjectAsset=async()=>null;
+    p2ProcessedCanvas=async()=>({width:1000,height:100});
+    p2DrawHeader=async()=>[];
+    p2DrawFooter=async()=>{};
+    p2DrawSegment=()=>{};
+    p2Canvas=(scale,layout)=>({ctx:{},canvas:{width:Math.round(layout.pageW*scale),height:Math.round(layout.pageH*scale),toDataURL:type=>'data:'+type+';base64,AAAA'}});
+    for(const preview of [false,true]){
+      const result=await p2GeneratePages({pub:'Example'},[{type:'image/jpeg'}],{},'standard',preview);
+      testAssert.equal(result.pages[0].width,2550);
+      testAssert.equal(result.pages[0].height,3300);
+      testAssert.equal(result.pages[0].lossless,true);
+      testAssert.ok(result.pages[0].dataUrl.startsWith('data:image/png;'));
+    }
+  })()`,context);
 });
 
 test('Phase 2 PDF builder keeps header metadata as extractable vector text',async()=>{
