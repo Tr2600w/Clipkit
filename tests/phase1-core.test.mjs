@@ -358,6 +358,8 @@ test('platform registry controls DB suffixes and file-name abbreviations',()=>{
     testAssert.equal(makeDbKey('Example Media','Bluesky'),'Example Media - BS');
     testAssert.equal(makeFullKey('Example Media','Facebook'),'Example Media - FB');
     testAssert.equal(makeFullKey('Example Media','Instagram'),'Example Media - IG');
+    testAssert.equal(makeFullKey('KhonkaenPOP','TikTok'),'KhonkaenPOP - Tiktok');
+    testAssert.equal(platformExportLabel('TikTok'),'Tiktok');
     testAssert.equal(makeFullKey('Example.com','Website'),'Example.com - WEB');
     testAssert.equal(buildOutputFileName('2026-08-06','Example Media','Bluesky',{
       name:'MMAD',filePattern:'{YYMMDD}_{Publication}-{Platform}.pdf'
@@ -368,6 +370,9 @@ test('platform registry controls DB suffixes and file-name abbreviations',()=>{
     testAssert.equal(buildOutputFileName('2026-08-06','Example.com','Website',{
       name:'MMAD',filePattern:'{YYMMDD}_{Publication}{PlatformSuffix}.pdf'
     }),'260806_Example.com.pdf');
+    testAssert.equal(buildOutputFileName('2026-08-06','KhonkaenPOP','TikTok',{
+      name:'MMAD',filePattern:'{YYMMDD}_{Publication}{PlatformSuffix}.pdf'
+    }),'260806_KhonkaenPOP - Tiktok.pdf');
     testAssert.equal(buildOutputFileName('2026-08-06','Channel 3','TV',{
       name:'MMAD',filePattern:'{YYMMDD}_{Publication}{PlatformSuffix}.pdf'
     },'2.29 min'),'260806_Channel 3 - TV - 2.29 min.pdf');
@@ -443,6 +448,7 @@ test('Phase 2 Letter naming and logo identities follow the Platform Registry',()
     testAssert.equal(p2OutputFileName(entries[1]),'260806_CommoCommu - IG_02.pdf');
     testAssert.equal(p2PublicationDisplay({pub:'Morning News',platform:'TV',duration:'2.29 min'}),'Morning News - TV - 2.29 min');
     testAssert.equal(p2PublicationDisplay({pub:'Example.com',platform:'Website'}),'Example.com');
+    testAssert.equal(p2PublicationDisplay({pub:'KhonkaenPOP',platform:'TikTok'}),'KhonkaenPOP - Tiktok');
     testAssert.equal(p2FormatDate('2026-08-13'),'13/08/2026');
     testAssert.equal(P2_LETTER.frame.x,43.5);
     testAssert.equal(P2_LETTER.frame.w,521.85);

@@ -61,7 +61,7 @@ const DEFAULT_PLATFORM_REGISTRY=[
   {id:'instagram',name:'Instagram',dbCode:'IG',fileCode:'IG',builtin:true,active:true,aliases:['ig']},
   {id:'x',name:'X',dbCode:'X',fileCode:'X',builtin:true,active:true,aliases:['Twitter','TW']},
   {id:'youtube',name:'YouTube',dbCode:'YT',fileCode:'YT',builtin:true,active:true,aliases:['yt']},
-  {id:'tiktok',name:'TikTok',dbCode:'Tiktok',fileCode:'TK',builtin:true,active:true,aliases:[]},
+  {id:'tiktok',name:'TikTok',dbCode:'Tiktok',fileCode:'Tiktok',builtin:true,active:true,aliases:[]},
   {id:'line-today',name:'LINE TODAY',dbCode:'LINE TODAY',fileCode:'LINE',builtin:true,active:true,aliases:[]},
   {id:'line',name:'LINE',dbCode:'Line',fileCode:'LINE',builtin:true,active:true,aliases:[]},
   {id:'tv',name:'TV',dbCode:'TV',fileCode:'TV',builtin:true,active:true,aliases:[]},
@@ -521,12 +521,16 @@ function platformId(name){
   return base||('platform-'+Date.now());
 }
 function normalizePlatformRecord(record){
-  return{
+  const normalized={
     id:platformId(record.id||record.name),name:String(record.name||'').trim(),
     dbCode:String(record.dbCode??record.code??'').trim(),fileCode:String(record.fileCode??record.dbCode??record.code??'').trim(),
     builtin:record.builtin===true,active:record.active!==false,
     aliases:Array.isArray(record.aliases)?record.aliases.map(v=>String(v).trim()).filter(Boolean):[]
   };
+  if(normalized.id==='tiktok'||normalized.name.toLowerCase()==='tiktok'){
+    normalized.dbCode='Tiktok';normalized.fileCode='Tiktok';
+  }
+  return normalized;
 }
 function getPlatformRegistry(){
   // A freshly migrated/cleared database may legitimately have no custom
@@ -572,6 +576,10 @@ function makeDbKey(pub,platform){
 function makeFullKey(pub,platform){
   const code=getPlatformCode(platform,'file')||getPlatformCode(platform,'db')||String(platform||'').trim()||'WEB';
   return String(pub||'').trim()+(code?' - '+code:'');
+}
+function platformExportLabel(platform){
+  const normalized=normPlatform(platform||'');
+  return normalized==='TikTok'?'Tiktok':normalized;
 }
 function activePlatforms(){return getPlatformRegistry().filter(p=>p.active);}
 const SOCIAL_DOMAINS={'instagram.com':'Instagram','facebook.com':'Facebook','fb.com':'Facebook','youtube.com':'YouTube','youtu.be':'YouTube','tiktok.com':'TikTok','twitter.com':'X','x.com':'X','line.me':'LINE TODAY','lemon8-app.com':'Lemon8','lemon8.com':'Lemon8'};
@@ -3038,7 +3046,7 @@ async function exportExcelData(data){
   // ── Sheet 1: News Data (full data, headers ภาษาไทย) ──
   const hdrs=['Project','วันที่','URL','ชื่อสื่อ','Platform','Logo_File','Full_Key','PR_Value','ประเภท','Headline','PDF_FileName','หมายเหตุ','Work_Status','Data_Status','Created_At','Updated_At'];
   const rows=sorted.map(e=>({
-    'Project':projectName,'วันที่':excelDate(e.date),'URL':e.url||'','ชื่อสื่อ':e.pub||'','Platform':e.platform||'',
+    'Project':projectName,'วันที่':excelDate(e.date),'URL':e.url||'','ชื่อสื่อ':e.pub||'','Platform':platformExportLabel(e.platform),
     'Logo_File':e.logoFile||'','Full_Key':makeFullKey(e.pub,e.platform),'PR_Value':e.prValue||0,
     'ประเภท':e.type||'','Headline':e.headline||'','PDF_FileName':buildOutputFileName(e.date,e.pub,e.platform,project,e.duration),'หมายเหตุ':e.remark||'',
     'Work_Status':statusMeta(e.status).label,
@@ -3060,7 +3068,7 @@ async function exportExcelData(data){
   const mmHdrs=['Project','Publication','Full_Key','PR_Value','Date','Link','Publication_Logo','Platform','Type','Headline','PDF_FileName','Remark','Work_Status'];
   const mmRows=sorted.map(e=>({
     'Project':projectName,'Publication':e.pub||'','Full_Key':makeFullKey(e.pub,e.platform),'PR_Value':e.prValue||0,'Date':excelDate(e.date),'Link':e.url||'',
-    'Publication_Logo':e.logoFile||'','Platform':e.platform||'','Type':e.type||'','Headline':e.headline||'',
+    'Publication_Logo':e.logoFile||'','Platform':platformExportLabel(e.platform),'Type':e.type||'','Headline':e.headline||'',
     'PDF_FileName':buildOutputFileName(e.date,e.pub,e.platform,project,e.duration),'Remark':e.remark||'','Work_Status':statusMeta(e.status).label
   }));
   const wsMM=XLSX.utils.json_to_sheet(mmRows,{header:mmHdrs});

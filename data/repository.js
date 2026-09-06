@@ -59,7 +59,7 @@
       twitter: 'X',
       youtube: 'YT',
       yt: 'YT',
-      tiktok: 'TK',
+      tiktok: 'Tiktok',
       tv: 'TV',
       line: 'LINE',
       'line-today': 'LINE',
