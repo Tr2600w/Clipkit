@@ -13,8 +13,8 @@ let p2EditingImageId=null,p2EditRotation=0,p2EditBreaks=[],p2EditBreaksManual=fa
 let p2BatchRows=[];
 let p2ExportFolderOnce=null;
 let p2PreviewSessionLogoId='';
-const P2_LETTER={pageW:612,pageH:792,frame:{x:43.5,y:27.05,w:521.85,h:136.45},title:{x:249.65,y:25.8,w:112.7,h:13.56},media:{x:72,y:44,w:128,h:44},client:{x:418.8,y:44,w:128,h:40},footer:{x:261,y:731,w:89.51,h:32.65},content:{x:56,w:500,firstTop:184,nextTop:56,firstH:511,nextH:648}};
-const P2_A4={pageW:595.28,pageH:841.89,frame:{x:35.14,y:27.05,w:521.85,h:136.45},title:{x:241.29,y:25.8,w:112.7,h:13.56},media:{x:63.64,y:44,w:128,h:44},client:{x:410.44,y:44,w:128,h:40},footer:{x:252.64,y:780.89,w:89.51,h:32.65},content:{x:47.64,w:500,firstTop:184,nextTop:56,firstH:561,nextH:696}};
+const P2_LETTER={pageW:612,pageH:792,frame:{x:43.5,y:27.05,w:521.85,h:136.45},title:{x:249.65,y:25.8,w:112.7,h:13.56},media:{x:72,y:44,w:128,h:44},client:{x:434,y:44,w:96,h:30},footer:{x:261,y:731,w:89.51,h:32.65},content:{x:56,w:500,firstTop:184,nextTop:56,firstH:511,nextH:648}};
+const P2_A4={pageW:595.28,pageH:841.89,frame:{x:35.14,y:27.05,w:521.85,h:136.45},title:{x:241.29,y:25.8,w:112.7,h:13.56},media:{x:63.64,y:44,w:128,h:44},client:{x:425.64,y:44,w:96,h:30},footer:{x:252.64,y:780.89,w:89.51,h:32.65},content:{x:47.64,w:500,firstTop:184,nextTop:56,firstH:561,nextH:696}};
 const P2_BODY_FONT='400 8.5px Arial,sans-serif';
 const P2_LINK_FONT='400 7.8px Arial,sans-serif';
 function p2Layout(format){return format==='a4'?P2_A4:P2_LETTER;}

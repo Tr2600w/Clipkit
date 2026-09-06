@@ -435,6 +435,26 @@ test('Phase 2 capture sizing and PDF pagination stay within safe bounds',()=>{
   `);
 });
 
+test('PDF header renders media and client logos at the approved visual size',async()=>{
+  const context=loadPhase2(`
+    globalThis.logoDraws=[];
+    loadImageSource=async source=>source==='media'
+      ?{naturalWidth:200,naturalHeight:100}
+      :{naturalWidth:320,naturalHeight:100};
+    globalThis.logoPromise=p2DrawHeader({
+      save(){},restore(){},strokeRect(){},fillRect(){},fillText(){},
+      drawImage(...args){logoDraws.push(args.slice(1));},
+      measureText(value){return{width:String(value).length*4};}
+    },{pub:'Example',platform:'Website'},
+    {publication:'Example',date:'2026-09-07',link:'https://example.com',prValue:210000},
+    {media:{dataUrl:'media'},client:{dataUrl:'client'}},{prFormat:'number'},P2_LETTER,false).then(()=>{
+      testAssert.deepEqual(logoDraws[0],[72,44,88,44]);
+      testAssert.deepEqual(logoDraws[1],[434,44,96,30]);
+    });
+  `);
+  await context.logoPromise;
+});
+
 test('Phase 2 Letter naming and logo identities follow the Platform Registry',()=>{
   loadPhase2(`
     const social=p2FileIdentity('CommoCommu - IG.png');
@@ -455,7 +475,7 @@ test('Phase 2 Letter naming and logo identities follow the Platform Registry',()
     testAssert.equal(P2_LETTER.frame.w,521.85);
     testAssert.deepEqual(P2_LETTER.title,{x:249.65,y:25.8,w:112.7,h:13.56});
     testAssert.equal(P2_LETTER.media.w,128);
-    testAssert.equal(P2_LETTER.client.w,128);
+    testAssert.equal(P2_LETTER.client.w,96);
     testAssert.equal(P2_LETTER.content.w,500);
     testAssert.equal(P2_LETTER.content.firstH,511);
     testAssert.equal(P2_LETTER.content.nextTop,56);
