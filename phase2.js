@@ -13,8 +13,8 @@ let p2EditingImageId=null,p2EditRotation=0,p2EditBreaks=[],p2EditBreaksManual=fa
 let p2BatchRows=[];
 let p2ExportFolderOnce=null;
 let p2PreviewSessionLogoId='';
-const P2_LETTER={pageW:612,pageH:792,frame:{x:43.5,y:27.05,w:521.85,h:136.45},title:{x:249.65,y:25.8,w:112.7,h:13.56},media:{x:72,y:44,w:128,h:44},client:{x:434,y:44,w:96,h:30},footer:{x:261,y:731,w:89.51,h:32.65},content:{x:56,w:500,firstTop:184,nextTop:56,firstH:511,nextH:648}};
-const P2_A4={pageW:595.28,pageH:841.89,frame:{x:35.14,y:27.05,w:521.85,h:136.45},title:{x:241.29,y:25.8,w:112.7,h:13.56},media:{x:63.64,y:44,w:128,h:44},client:{x:425.64,y:44,w:96,h:30},footer:{x:252.64,y:780.89,w:89.51,h:32.65},content:{x:47.64,w:500,firstTop:184,nextTop:56,firstH:561,nextH:696}};
+const P2_LETTER={pageW:612,pageH:792,frame:{x:43.5,y:27.05,w:521.85,h:136.45},title:{x:249.65,y:25.8,w:112.7,h:13.56},media:{x:72,y:48,w:108,h:36,square:{x:72,y:42,w:52,h:52,align:'left'}},client:{x:422,y:48,w:108,h:36,square:{x:478,y:42,w:52,h:52,align:'right'}},footer:{x:261,y:731,w:89.51,h:32.65},content:{x:56,w:500,firstTop:184,nextTop:56,firstH:511,nextH:648}};
+const P2_A4={pageW:595.28,pageH:841.89,frame:{x:35.14,y:27.05,w:521.85,h:136.45},title:{x:241.29,y:25.8,w:112.7,h:13.56},media:{x:63.64,y:48,w:108,h:36,square:{x:63.64,y:42,w:52,h:52,align:'left'}},client:{x:413.64,y:48,w:108,h:36,square:{x:469.64,y:42,w:52,h:52,align:'right'}},footer:{x:252.64,y:780.89,w:89.51,h:32.65},content:{x:47.64,w:500,firstTop:184,nextTop:56,firstH:561,nextH:696}};
 const P2_BODY_FONT='400 8.5px Arial,sans-serif';
 const P2_LINK_FONT='400 7.8px Arial,sans-serif';
 function p2Layout(format){return format==='a4'?P2_A4:P2_LETTER;}
@@ -485,11 +485,11 @@ function p2WrapChars(ctx,text,maxWidth,maxLines=3){
   for(const char of value){const next=line+char;if(ctx.measureText(next).width>maxWidth&&line){lines.push(line);line=char;if(lines.length>=maxLines)break;}else line=next;}
   if(line&&lines.length<maxLines)lines.push(line);if(lines.length===maxLines&&lines.join('').length<value.length)lines[maxLines-1]=lines[maxLines-1].replace(/…?$/,'…');return lines;
 }
-async function p2DrawAsset(ctx,asset,x,y,w,h,align='center',transparent=false){
+async function p2DrawAsset(ctx,asset,x,y,w,h,align='center',transparent=false,squareBox=null){
   if(!asset||!asset.dataUrl)return;try{
     const img=await loadImageSource(asset.dataUrl);let source=img;
     if(transparent){const cut=document.createElement('canvas');cut.width=img.naturalWidth;cut.height=img.naturalHeight;const c=cut.getContext('2d',{willReadFrequently:true});c.drawImage(img,0,0);const pixels=c.getImageData(0,0,cut.width,cut.height),d=pixels.data;for(let i=0;i<d.length;i+=4){const min=Math.min(d[i],d[i+1],d[i+2]),max=Math.max(d[i],d[i+1],d[i+2]);if(min>225&&max-min<22)d[i+3]=Math.max(0,Math.round(255-(min-225)*8.5));}c.putImageData(pixels,0,0);source=cut;}
-    const sw=source.naturalWidth||source.width,sh=source.naturalHeight||source.height,ratio=Math.min(w/sw,h/sh),dw=sw*ratio,dh=sh*ratio,dx=align==='left'?x:align==='right'?x+w-dw:x+(w-dw)/2;ctx.drawImage(source,dx,y+(h-dh)/2,dw,dh);
+    const sw=source.naturalWidth||source.width,sh=source.naturalHeight||source.height,isSquare=squareBox&&sw/sh>=.8&&sw/sh<=1.25,box=isSquare?squareBox:{x,y,w,h,align},ratio=Math.min(box.w/sw,box.h/sh),dw=sw*ratio,dh=sh*ratio,dx=box.align==='left'?box.x:box.align==='right'?box.x+box.w-dw:box.x+(box.w-dw)/2;ctx.drawImage(source,dx,box.y+(box.h-dh)/2,dw,dh);
   }catch(err){console.warn('[ClipKit] วาดโลโก้ไม่ได้',err);}
 }
 async function p2DrawFooter(ctx,agency,transparent=false,layout=P2_LETTER){if(!agency)return;const f=layout.footer;await p2DrawAsset(ctx,agency,f.x,f.y,f.w,f.h,'center',transparent);}
@@ -504,7 +504,7 @@ function p2HeaderVectors(ctx,entry,values,project,layout=P2_LETTER){
 async function p2DrawHeader(ctx,entry,values,assets,project,layout=P2_LETTER,drawText=true){
   const L=layout,t=L.title,dx=L.frame.x-P2_LETTER.frame.x,transparent=Boolean(project.logoWhiteTransparent);ctx.save();ctx.strokeStyle='#111';ctx.lineWidth=1.5;ctx.strokeRect(L.frame.x,L.frame.y,L.frame.w,L.frame.h);
   const title=project.newsTitleOverride||p2Global().title||'NEWSCLIPPING';ctx.fillStyle='#050505';ctx.fillRect(t.x,t.y,t.w,t.h);ctx.fillStyle='#fff';ctx.font='700 11.04px "Century Gothic",Arial,sans-serif';const titleSpacing=2.2,textWidth=[...title].reduce((s,c)=>s+ctx.measureText(c).width+titleSpacing,0)-titleSpacing,p2TitleX=t.x+(t.w-textWidth)/2;p2DrawSpaced(ctx,title,p2TitleX,t.y+10.9,titleSpacing);
-  await p2DrawAsset(ctx,assets.media,L.media.x,L.media.y,L.media.w,L.media.h,'left',transparent);await p2DrawAsset(ctx,assets.client,L.client.x,L.client.y,L.client.w,L.client.h,'right',transparent);
+  await p2DrawAsset(ctx,assets.media,L.media.x,L.media.y,L.media.w,L.media.h,'left',transparent,L.media.square);await p2DrawAsset(ctx,assets.client,L.client.x,L.client.y,L.client.w,L.client.h,'right',transparent,L.client.square);
   const vectors=p2HeaderVectors(ctx,entry,values,project,L);ctx.fillStyle='#111';for(const item of vectors){if(drawText||item.vector===false||!p2CanVectorText(item.text)){ctx.font=item.font||('400 '+item.size+'px Arial,sans-serif');ctx.fillText(item.text,item.x,item.y);}}ctx.restore();return vectors.filter(item=>item.vector!==false&&p2CanVectorText(item.text));
 }
 function p2TailPixels(remaining,nextCapacity){if(remaining<=0)return 0;const value=remaining%nextCapacity;return value<1?nextCapacity:value;}
