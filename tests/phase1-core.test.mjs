@@ -281,6 +281,27 @@ test('Phase 2 storage helpers route binary assets, captures, and directory confi
   })()`,context);
 });
 
+test('uploading an agency logo persists its project reference after IndexedDB hydration',async()=>{
+  const context=loadPhase2();
+  await vm.runInContext(`(async()=>{
+    await ClipKitRepository.projects.put({
+      id:'default',name:'Default',clientName:'Default',settings:{},
+      createdAt:'2026-09-08T00:00:00.000Z',updatedAt:'2026-09-08T00:00:00.000Z',
+      deletedAt:null,recordVersion:1
+    });
+    installLegacySnapshot(await ClipKitLegacyAdapter.hydrate('default'));
+    p2AssetFromFile=async()=>({
+      id:'agency-logo',assetKind:'logo',kind:'agency',name:'agency.png',
+      mime:'image/png',dataUrl:'data:image/png;base64,bG9nbw==',
+      width:320,height:100,createdAt:'2026-09-08T00:00:00.000Z'
+    });
+    await uploadProjectAsset({target:{files:[{name:'agency.png'}],value:'agency.png'}},'agency');
+    const project=await ClipKitRepository.projects.get('default');
+    testAssert.equal(project.agencyLogoAssetId,'agency-logo');
+    testAssert.equal(project.settings.agencyLogoMode,'asset');
+  })()`,context);
+});
+
 test('bootstrap keeps the app usable when migration verification fails',async()=>{
   const context=loadApp();
   context.console={...console,error:()=>{}};

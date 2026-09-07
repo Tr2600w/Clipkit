@@ -183,13 +183,28 @@ async function importLogoFolder(event){
   if(summary)summary.textContent=imported+' โลโก้ · จับคู่ตรง '+matched+' รายการ';
   toast('✓ นำเข้า '+imported+' โลโก้แล้ว','ok');renderLogoManager();
 }
+async function p2AssignProjectAsset(kind,assetId){
+  const current=adapterRecord('projects',_activeProj);
+  if(current){
+    const values=kind==='client'
+      ?{id:_activeProj,clientLogoAssetId:assetId}
+      :{id:_activeProj,agencyLogoAssetId:assetId,settings:{agencyLogoMode:'asset'}};
+    const result=await updateProjectCommand(values,{actor:'user',expectedRevision:current.recordVersion,idempotencyKey:commandUuid()});
+    if(!result||!result.ok)throw(result&&result.error||new Error('บันทึกโลโก้กับโปรเจกต์ไม่สำเร็จ'));
+    return result.record;
+  }
+  const projects=getAllProjects(),idx=projects.findIndex(project=>project.id===_activeProj);
+  if(idx<0)throw new Error('ไม่พบโปรเจกต์สำหรับบันทึกโลโก้');
+  if(kind==='client')projects[idx].clientLogoAssetId=assetId;
+  else{projects[idx].agencyLogoAssetId=assetId;projects[idx].agencyLogoMode='asset';}
+  saveProjectList(projects);return projects[idx];
+}
 async function uploadProjectAsset(event,kind){
   const file=event.target.files&&event.target.files[0];event.target.value='';if(!file)return;
   try{
     const asset=await p2AssetFromFile(file,kind);const saved=await p2StorePut('assets',asset);const persisted=saved||asset;
-    if(kind==='agency'&&!p2Global().agencyLogoAssetId)p2SaveGlobal({agencyLogoAssetId:asset.id});
-    const projects=getAllProjects(),idx=projects.findIndex(p=>p.id===_activeProj);
-    if(idx>=0){if(kind==='client')projects[idx].clientLogoAssetId=persisted.id;else{projects[idx].agencyLogoAssetId=persisted.id;projects[idx].agencyLogoMode='asset';}saveProjectList(projects);}
+    if(kind==='agency'&&!p2Global().agencyLogoAssetId)p2SaveGlobal({agencyLogoAssetId:persisted.id});
+    await p2AssignProjectAsset(kind,persisted.id);
     const preview=document.getElementById(kind==='client'?'cfgClientLogoPreview':'cfgAgencyLogoPreview');
     if(preview&&persisted.dataUrl)preview.innerHTML='<img src="'+escAttr(persisted.dataUrl)+'" alt="โลโก้">';
     await p2PopulateSettings();toast('✓ บันทึกโลโก้แล้ว','ok');
