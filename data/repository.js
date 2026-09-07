@@ -72,6 +72,8 @@
 
   function sheetFullKey(publication, platformId) {
     const pub = String(publication || '').trim();
+    const platform = String(platformId || '').trim().toLowerCase();
+    if (platform === 'web' || platform === 'website') return pub;
     const code = sheetPlatformCode(platformId);
     return pub ? `${pub} - ${code}` : '';
   }

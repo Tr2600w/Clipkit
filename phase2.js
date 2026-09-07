@@ -251,13 +251,7 @@ async function getCaptureRecord(projectId,entryId){
 }
 async function saveCaptureRecord(projectId,entryId,images){
   if(!p2Unified())return window.saveCaptureRecord?window.saveCaptureRecord(projectId,entryId,images):null;
-  // A transformed capture must be stored as a new asset. Reusing the old
-  // asset id makes the transactional repository reject the new bytes.
-  const storedImages=(images||[]).map(image=>{
-    const next={...image,previewDataUrl:image.dataUrl,sourceOriginalDataUrl:image.originalDataUrl};
-    if(next.assetId){next.id=String(next.id||'capture')+'-edit-'+Date.now()+'-'+Math.random().toString(36).slice(2,7);delete next.assetId;}
-    return next;
-  });
+  const storedImages=(images||[]).map(image=>({...image,previewDataUrl:image.dataUrl,sourceOriginalDataUrl:image.originalDataUrl||image.sourceOriginalDataUrl}));
   return ClipKitRepository.captures.saveTransform({id:projectId+':'+entryId,key:projectId+':'+entryId,projectId,entryId,images:storedImages});
 }
 async function p2ChooseProjectFolder(){
@@ -466,7 +460,26 @@ async function p2RenderEditorLayoutPreview(){
 }
 function p2CurrentEditorLayout(){const format=((document.getElementById('captureTemplate')||{}).value||'news')==='standard'?'a4':'letter';return p2Layout(format);}
 function startEditorOffsetDrag(event){const marker=event.currentTarget,rail=marker.parentElement,layout=p2CurrentEditorLayout();marker.setPointerCapture(event.pointerId);marker.onpointermove=move=>{if(!marker.hasPointerCapture(move.pointerId))return;const rect=rail.getBoundingClientRect(),value=Math.max(0,Math.min(p2MaxFirstOffsetPt(),Math.round((move.clientY-rect.top)/rect.height*layout.content.firstH)));setEditedOffset(value,false);marker.textContent=value;};marker.onpointerup=()=>p2QueueEditorLayoutRender(0);}
-function saveEditorLayoutDefault(){const projects=getAllProjects(),idx=projects.findIndex(project=>project.id===_activeProj);if(idx<0)return;projects[idx]={...projects[idx],captureLayoutDefault:{scalePercent:p2EditScale,align:p2EditAlign,firstPageOffsetPt:p2EditOffset,nextPageOffsetPt:p2EditNextOffset}};saveProjectList(projects);toast('✓ บันทึกขนาดและตำแหน่งเป็นค่าเริ่มต้นของโปรเจกต์แล้ว','ok');}
+async function saveEditorLayoutDefault(){
+  const captureLayoutDefault={scalePercent:p2EditScale,align:p2EditAlign,firstPageOffsetPt:p2EditOffset,nextPageOffsetPt:p2EditNextOffset};
+  try{
+    const item=_captureImages.find(image=>image.id===p2EditingImageId);
+    if(item){item.transform=p2CurrentEditorTransform();await persistCaptureImages();}
+    const current=adapterRecord('projects',_activeProj);
+    if(current){
+      const result=await updateProjectCommand({id:_activeProj,settings:{captureLayoutDefault}},{actor:'user',expectedRevision:current.recordVersion,idempotencyKey:commandUuid()});
+      if(!result||!result.ok)throw(result&&result.error||new Error('บันทึกค่าเริ่มต้นโปรเจกต์ไม่สำเร็จ'));
+    }else{
+      const projects=getAllProjects(),idx=projects.findIndex(project=>project.id===_activeProj);
+      if(idx<0)throw new Error('ไม่พบโปรเจกต์สำหรับบันทึกค่าเริ่มต้น');
+      if(p2Unified()){
+        const project=projects[idx],result=await createProjectCommand({...project,id:_activeProj,settings:{...(project.settings||{}),captureLayoutDefault}},{actor:'user',idempotencyKey:commandUuid()});
+        if(!result||!result.ok)throw(result&&result.error||new Error('สร้างข้อมูลโปรเจกต์สำหรับบันทึกค่าเริ่มต้นไม่สำเร็จ'));
+      }else{projects[idx]={...projects[idx],captureLayoutDefault};saveProjectList(projects);}
+    }
+    toast('✓ บันทึกภาพและตั้งเป็นค่าเริ่มต้นของโปรเจกต์แล้ว','ok');return true;
+  }catch(err){toast((err&&err.message)||'บันทึกค่าเริ่มต้นโปรเจกต์ไม่สำเร็จ','err');return false;}
+}
 function p2RenderPageOverlay(img){
   const layer=document.getElementById('imageBreakLayer');if(!layer||!p2EditSourceCanvas)return;const format=(document.getElementById('captureTemplate').value||'news')==='standard'?'a4':'letter',layout=p2Layout(format),firstCapture=_captureImages.findIndex(item=>item.id===p2EditingImageId)===0,transform=p2CurrentEditorTransform(),segments=p2PageSegments(p2EditSourceCanvas,p2EditBreaksManual?p2EditBreaks:[],firstCapture,layout,transform),total=p2EditSourceCanvas.height;
   layer.innerHTML=segments.map((segment,i)=>'<div class="paper-page-band '+(i%2?'even':'odd')+'" style="top:'+(segment.y/total*100).toFixed(3)+'%;height:'+(segment.height/total*100).toFixed(3)+'%"><span>หน้า '+(i+1)+' · '+segment.capacityPt+' pt</span><em>พื้นที่โลโก้บริษัท</em></div>'+(i<segments.length-1?'<div class="page-break-handle '+segment.cutMode+'" data-page-index="'+i+'" style="top:'+((segment.y+segment.height)/total*100).toFixed(3)+'%"><b>'+(segment.cutMode==='manual'?'Manual cut':'Auto cut')+' · หน้า '+(i+1)+'</b></div>':'')).join('');

@@ -281,6 +281,31 @@ test('Phase 2 storage helpers route binary assets, captures, and directory confi
   })()`,context);
 });
 
+test('repeated capture saves reuse the immutable original asset after preview encoding changes',async()=>{
+  const context=loadPhase2();
+  await vm.runInContext(`(async()=>{
+    _activeProj='default';
+    _captureEntryId='entry-repeat-save';
+    _captureImages=[{
+      id:'cap-repeat-save',name:'screen.png',type:'image/jpeg',
+      dataUrl:'data:image/jpeg;base64,cHJldmlldy0x',
+      originalDataUrl:'data:image/png;base64,b3JpZ2luYWwtYnl0ZXM=',
+      width:120,height:240,transform:{scalePercent:100,align:'center'}
+    }];
+
+    await persistCaptureImages();
+    const firstAssetId=_captureImages[0].assetId;
+    _captureImages[0].dataUrl='data:image/png;base64,cHJldmlldy0y';
+    _captureImages[0].type='image/png';
+    await persistCaptureImages();
+
+    const [capture]=await ClipKitRepository.captures.listByEntry('entry-repeat-save');
+    testAssert.equal(Boolean(firstAssetId),true);
+    testAssert.equal(capture.images[0].assetId,firstAssetId);
+    testAssert.equal(await (await ClipKitRepository.assets.getBlob(firstAssetId)).text(),'original-bytes');
+  })()`,context);
+});
+
 test('uploading an agency logo persists its project reference after IndexedDB hydration',async()=>{
   const context=loadPhase2();
   await vm.runInContext(`(async()=>{
@@ -299,6 +324,79 @@ test('uploading an agency logo persists its project reference after IndexedDB hy
     const project=await ClipKitRepository.projects.get('default');
     testAssert.equal(project.agencyLogoAssetId,'agency-logo');
     testAssert.equal(project.settings.agencyLogoMode,'asset');
+  })()`,context);
+});
+
+test('saving the capture layout default persists it after IndexedDB hydration',async()=>{
+  const context=loadPhase2();
+  await vm.runInContext(`(async()=>{
+    await ClipKitRepository.projects.put({
+      id:'default',name:'Default',clientName:'Default',settings:{},
+      createdAt:'2026-09-08T00:00:00.000Z',updatedAt:'2026-09-08T00:00:00.000Z',
+      deletedAt:null,recordVersion:1
+    });
+    installLegacySnapshot(await ClipKitLegacyAdapter.hydrate('default'));
+    p2EditScale=65;
+    p2EditAlign='right';
+    p2EditOffset=70;
+    p2EditNextOffset=34;
+
+    await saveEditorLayoutDefault();
+
+    const project=await ClipKitRepository.projects.get('default');
+    testAssert.equal(JSON.stringify(project.settings.captureLayoutDefault),JSON.stringify({
+      scalePercent:65,align:'right',firstPageOffsetPt:70,nextPageOffsetPt:34
+    }));
+  })()`,context);
+});
+
+test('saving the project layout default also preserves the active capture adjustments',async()=>{
+  const context=loadPhase2();
+  await vm.runInContext(`(async()=>{
+    await ClipKitRepository.projects.put({
+      id:'default',name:'Default',clientName:'Default',settings:{},
+      createdAt:'2026-09-08T00:00:00.000Z',updatedAt:'2026-09-08T00:00:00.000Z',
+      deletedAt:null,recordVersion:1
+    });
+    installLegacySnapshot(await ClipKitLegacyAdapter.hydrate('default'));
+    _captureEntryId='entry-layout';
+    p2EditingImageId='capture-layout';
+    _captureImages=[{
+      id:'capture-layout',name:'screen.png',type:'image/png',mime:'image/png',
+      dataUrl:'data:image/png;base64,cHJldmlldw==',
+      originalDataUrl:'data:image/png;base64,b3JpZ2luYWw=',width:120,height:240
+    }];
+    p2EditScale=60;
+    p2EditAlign='left';
+    p2EditOffset=65;
+    p2EditNextOffset=24;
+
+    await saveEditorLayoutDefault();
+
+    const [capture]=await ClipKitRepository.captures.listByEntry('entry-layout');
+    testAssert.equal(capture.images[0].transform.scalePercent,60);
+    testAssert.equal(capture.images[0].transform.align,'left');
+    testAssert.equal(capture.images[0].transform.firstPageOffsetPt,65);
+  })()`,context);
+});
+
+test('saving a layout default creates the missing active project record',async()=>{
+  const context=loadPhase2();
+  await vm.runInContext(`(async()=>{
+    installLegacySnapshot({
+      activeProjectId:'default',projects:[{id:'default',name:'Default',clientName:'Default'}],
+      entries:[],mediaRows:[],platforms:[],usernameMap:{}
+    });
+    p2EditScale=60;
+    p2EditAlign='center';
+    p2EditOffset=24;
+    p2EditNextOffset=34;
+
+    const saved=await saveEditorLayoutDefault();
+
+    const project=await ClipKitRepository.projects.get('default');
+    testAssert.equal(saved,true);
+    testAssert.equal(project.settings.captureLayoutDefault.scalePercent,60);
   })()`,context);
 });
 
@@ -382,7 +480,8 @@ test('platform registry controls DB suffixes and file-name abbreviations',()=>{
     testAssert.equal(makeFullKey('Example Media','Instagram'),'Example Media - IG');
     testAssert.equal(makeFullKey('KhonkaenPOP','TikTok'),'KhonkaenPOP - Tiktok');
     testAssert.equal(platformExportLabel('TikTok'),'Tiktok');
-    testAssert.equal(makeFullKey('Example.com','Website'),'Example.com - WEB');
+    testAssert.equal(makeFullKey('Example.com','Website'),'Example.com');
+    testAssert.equal(makeFullKey('Example.com','Web'),'Example.com');
     testAssert.equal(buildOutputFileName('2026-08-06','Example Media','Bluesky',{
       name:'MMAD',filePattern:'{YYMMDD}_{Publication}-{Platform}.pdf'
     }),'260806_Example Media-BSKY.pdf');
