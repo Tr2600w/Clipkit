@@ -574,8 +574,10 @@ function makeDbKey(pub,platform){
   const code=getPlatformCode(platform,'db');return code?String(pub||'').trim()+' - '+code:String(pub||'').trim();
 }
 function makeFullKey(pub,platform){
+  const publication=String(pub||'').trim(),normalized=normPlatform(platform||'');
+  if(normalized==='Website'||normalized==='Web')return publication;
   const code=getPlatformCode(platform,'file')||getPlatformCode(platform,'db')||String(platform||'').trim()||'WEB';
-  return String(pub||'').trim()+(code?' - '+code:'');
+  return publication+(code?' - '+code:'');
 }
 function platformExportLabel(platform){
   const normalized=normPlatform(platform||'');
@@ -2373,7 +2375,8 @@ function onCapturePaste(event){
   if(files.length){event.preventDefault();addCaptureFiles(files);}
 }
 async function persistCaptureImages(){
-  await saveCaptureRecord(_activeProj,_captureEntryId,_captureImages);
+  const saved=await saveCaptureRecord(_activeProj,_captureEntryId,_captureImages);
+  if(saved&&Array.isArray(saved.images))for(const stored of saved.images){const local=_captureImages.find(image=>image.id===stored.id);if(local&&stored.assetId)local.assetId=stored.assetId;}
   const current=entryById(_captureEntryId),raw=adapterRecord('entries',_captureEntryId);
   if(current&&raw&&_captureImages.length&&(current.status||'draft')==='draft'){
     const result=await saveEntryCommand({id:raw.id,workflowStatus:'captured'},{actor:'user',expectedRevision:raw.recordVersion,idempotencyKey:commandUuid()});
