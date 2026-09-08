@@ -6,6 +6,7 @@ const P2_ASSET_VERSION=2;
 const P2_GLOBAL_KEY='ck_phase2_global';
 const P2_DEFAULTS={title:'NEWSCLIPPING',prFormat:'number'};
 const P2_DEFAULT_NEXT_OFFSET_PT=80;
+const P2_DEFAULT_PDF_TARGET_BYTES=1048576;
 let p2DbPromise=null;
 let p2SelectedIds=new Set();
 let p2PreviewEntryId=null,p2PreviewPages=[],p2PreviewReady=false,p2PreviewTimer=null;
@@ -13,6 +14,7 @@ let p2EditingImageId=null,p2EditRotation=0,p2EditBreaks=[],p2EditBreaksManual=fa
 let p2BatchRows=[];
 let p2ExportFolderOnce=null;
 let p2PreviewSessionLogoId='';
+let p2ProjectExportSettingsWrite=Promise.resolve();
 const P2_LETTER={pageW:612,pageH:792,frame:{x:43.5,y:27.05,w:521.85,h:136.45},title:{x:249.65,y:25.8,w:112.7,h:13.56},media:{x:72,y:48,w:108,h:36,square:{x:72,y:42,w:52,h:52,align:'left'}},client:{x:422,y:48,w:108,h:36,square:{x:478,y:42,w:52,h:52,align:'right'}},footer:{x:261,y:731,w:89.51,h:32.65},content:{x:56,w:500,firstTop:184,nextTop:56,firstH:511,nextH:648}};
 const P2_A4={pageW:595.28,pageH:841.89,frame:{x:35.14,y:27.05,w:521.85,h:136.45},title:{x:241.29,y:25.8,w:112.7,h:13.56},media:{x:63.64,y:48,w:108,h:36,square:{x:63.64,y:42,w:52,h:52,align:'left'}},client:{x:413.64,y:48,w:108,h:36,square:{x:469.64,y:42,w:52,h:52,align:'right'}},footer:{x:252.64,y:780.89,w:89.51,h:32.65},content:{x:47.64,w:500,firstTop:184,nextTop:56,firstH:561,nextH:696}};
 const P2_BODY_FONT='400 8.5px Arial,sans-serif';
@@ -199,6 +201,31 @@ async function p2AssignProjectAsset(kind,assetId){
   else{projects[idx].agencyLogoAssetId=assetId;projects[idx].agencyLogoMode='asset';}
   saveProjectList(projects);return projects[idx];
 }
+async function p2PersistProjectExportSettings(settings){
+  const projectId=_activeProj;
+  const values={...settings,pdfTargetBytes:Math.max(1,Number(settings.pdfTargetBytes)||P2_DEFAULT_PDF_TARGET_BYTES)};
+  const write=p2ProjectExportSettingsWrite.then(async()=>{
+    const current=p2Unified()?await ClipKitRepository.projects.get(projectId):adapterRecord('projects',projectId);
+    if(current){
+      const projectValues={id:projectId,settings:{...values}};
+      if(Object.prototype.hasOwnProperty.call(values,'agencyLogoAssetId')){
+        projectValues.agencyLogoAssetId=values.agencyLogoAssetId;
+        delete projectValues.settings.agencyLogoAssetId;
+      }
+      const result=await updateProjectCommand(
+        projectValues,
+        {actor:'user',expectedRevision:current.recordVersion,idempotencyKey:commandUuid()}
+      );
+      if(!result||!result.ok)throw(result&&result.error||new Error('บันทึกค่า Export ของโปรเจกต์ไม่สำเร็จ'));
+      return result.record;
+    }
+    const projects=getAllProjects(),idx=projects.findIndex(project=>project.id===projectId);
+    if(idx<0)throw new Error('ไม่พบโปรเจกต์สำหรับบันทึกค่า Export');
+    projects[idx]={...projects[idx],...values};saveProjectList(projects);return projects[idx];
+  });
+  p2ProjectExportSettingsWrite=write.catch(()=>{});
+  return write;
+}
 async function uploadProjectAsset(event,kind){
   const file=event.target.files&&event.target.files[0];event.target.value='';if(!file)return;
   try{
@@ -230,15 +257,21 @@ async function p2PopulateSettings(){
   await p2RefreshFolderStatus();
 }
 const p2BaseSaveSettings=saveSettings;
-saveSettings=function(){
+saveSettings=async function(){
   const title=(document.getElementById('cfgNewsTitle').value||'NEWSCLIPPING').trim()||'NEWSCLIPPING',prFormat=document.getElementById('cfgPrFormat').value||'number',agency=document.getElementById('cfgAgencyLogoSelect').value||'none',logoWhiteTransparent=document.getElementById('cfgLogoTransparent').checked,duplicateMode=(document.getElementById('cfgDuplicateMode')||{}).value||'suffix',separateOutputFolders={pdf:Boolean((document.getElementById('cfgSeparatePdf')||{}).checked),excel:Boolean((document.getElementById('cfgSeparateExcel')||{}).checked),backup:Boolean((document.getElementById('cfgSeparateBackup')||{}).checked)};
-  p2BaseSaveSettings();
-  const projects=getAllProjects(),idx=projects.findIndex(p=>p.id===_activeProj);
-  if(idx>=0){
-    const isSystemProject=_activeProj===DEFAULT_PROJ;
-    if(isSystemProject)p2SaveGlobal({title,prFormat});
-    projects[idx]={...projects[idx],newsTitleOverride:isSystemProject?'':title,prFormat,logoWhiteTransparent,duplicateMode,separateOutputFolders,agencyLogoMode:agency==='none'?'none':agency==='global'?'global':'asset',agencyLogoAssetId:agency!=='none'&&agency!=='global'?agency:projects[idx].agencyLogoAssetId||''};saveProjectList(projects);
-  }
+  const baseResult=await p2BaseSaveSettings();if(!baseResult||!baseResult.ok)return baseResult;
+  const project=getActiveProject(),isSystemProject=_activeProj===DEFAULT_PROJ;
+  if(isSystemProject)p2SaveGlobal({title,prFormat});
+  try{
+    await p2PersistProjectExportSettings({
+      newsTitleOverride:isSystemProject?'':title,prFormat,logoWhiteTransparent,duplicateMode,separateOutputFolders,
+      agencyLogoMode:agency==='none'?'none':agency==='global'?'global':'asset',
+      agencyLogoAssetId:agency!=='none'&&agency!=='global'?agency:project.agencyLogoAssetId||'',
+      pdfTemplate:project.pdfTemplate||'news',pdfQuality:project.pdfQuality||'standard',
+      pdfTargetBytes:project.pdfTargetBytes||P2_DEFAULT_PDF_TARGET_BYTES
+    });
+    return{ok:true};
+  }catch(error){toast(error.message,'err');return{ok:false,error};}
 };
 
 function p2DirectoryKey(projectId=_activeProj){return'directory:'+(projectId===DEFAULT_PROJ?'global':projectId);}
@@ -542,7 +575,13 @@ function p2PaperBreak(canvas,start,capacity,maxY,nextCapacity){
   try{for(let y=from;y<ideal;y+=step){const data=ctx.getImageData(0,y,canvas.width,1).data;let white=0,count=0;for(let x=0;x<data.length;x+=64){count++;if(data[x]>242&&data[x+1]>242&&data[x+2]>242)white++;}const ratio=count?white/count:0,score=ratio-(ideal-y)/range*.08;if(ratio>=.93&&score>bestScore){bestScore=score;best=y;}}}catch{return ideal;}
   const candidateTail=p2TailPixels(maxY-best,nextCapacity);if(best<ideal&&candidateTail<=tinyTailLimit)return ideal;return best;
 }
-function p2DpiForQuality(quality){return quality==='high'?300:150;}
+function p2CompressionProfiles(quality){
+  return quality==='high'
+    ?[{id:'high',dpi:300,jpegQuality:.94},{id:'sharp',dpi:240,jpegQuality:.90},{id:'balanced',dpi:200,jpegQuality:.86},{id:'compact',dpi:170,jpegQuality:.82},{id:'minimum',dpi:150,jpegQuality:.78}]
+    :[{id:'standard',dpi:150,jpegQuality:.90},{id:'compact',dpi:150,jpegQuality:.84},{id:'minimum',dpi:150,jpegQuality:.78}];
+}
+function p2QualityProfile(quality){return typeof quality==='object'&&quality?quality:p2CompressionProfiles(quality)[0];}
+function p2DpiForQuality(quality){return p2QualityProfile(quality).dpi;}
 function p2BaseDrawWidthPt(canvas,layout){return Math.min(layout.content.w,canvas.width*72/96);}
 function p2DrawWidthPt(canvas,layout,transform){return p2BaseDrawWidthPt(canvas,layout)*p2Transform(transform).scalePercent/100;}
 function p2MaxSegmentPixels(canvas,maxPt,layout,transform){return Math.max(1,Math.floor(maxPt*canvas.width/p2DrawWidthPt(canvas,layout,transform)));}
@@ -558,11 +597,11 @@ function p2DrawSegment(ctx,source,segment,hasHeader,scale,layout=P2_LETTER,trans
   ctx.drawImage(source,0,segment.y,source.width,segment.height,p2SegmentLeft(layout,drawW,t.align),top,drawW,drawH);
 }
 async function p2GeneratePages(entry,images,values,quality='standard',preview=false,format='letter'){
-  const project=typeof getActiveProject==='function'?(getActiveProject()||{}):{},layout=p2Layout(format),scale=preview?2:p2DpiForQuality(quality)/72,media=await p2FindMediaLogo(entry),client=await p2GetProjectAsset(project,'client'),agency=await p2GetProjectAsset(project,'agency'),assets={media,client,agency},pages=[],qualityRows=[];
+  const project=typeof getActiveProject==='function'?(getActiveProject()||{}):{},profile=p2QualityProfile(quality),layout=p2Layout(format),scale=preview?2:profile.dpi/72,media=await p2FindMediaLogo(entry),client=await p2GetProjectAsset(project,'client'),agency=await p2GetProjectAsset(project,'agency'),assets={media,client,agency},pages=[],qualityRows=[];
   for(let imageIndex=0;imageIndex<images.length;imageIndex++){
     const item=images[imageIndex],firstHasHeader=item.__p2FirstHasHeader!==undefined?Boolean(item.__p2FirstHasHeader):imageIndex===0,transform=p2Transform(item),source=await p2ProcessedCanvas(item,1),manual=p2ManualCutsForOutput(item),segments=p2PageSegments(source,manual,firstHasHeader,layout,transform),widthPt=p2DrawWidthPt(source,layout,transform),dpi=p2EffectiveDpi(source,layout,transform),last=segments[segments.length-1],lastPt=last?last.height*widthPt/source.width:0,nextTailLimit=Math.max(1,layout.content.nextH-transform.nextPageOffsetPt)*p2TinyTailRatio();qualityRows.push({name:item.name||'Capture '+(imageIndex+1),dpi,widthPt:Math.round(widthPt),scalePercent:transform.scalePercent,align:transform.align,level:p2QualityLevel(dpi),readabilityWarning:transform.scalePercent<50,pageCount:segments.length,tinyTail:segments.length>1&&lastPt<=nextTailLimit});
     for(let segmentIndex=0;segmentIndex<segments.length;segmentIndex++){
-      const hasHeader=firstHasHeader&&segmentIndex===0,hasLogo=Boolean(agency||(hasHeader&&(media||client))),pageScale=hasLogo?Math.max(scale,300/72):scale,{canvas,ctx}=p2Canvas(pageScale,layout);let vector=[];if(hasHeader)vector=await p2DrawHeader(ctx,entry,values,assets,project,layout,false);p2DrawSegment(ctx,source,segments[segmentIndex],hasHeader,pageScale,layout,transform);await p2DrawFooter(ctx,agency,Boolean(project.logoWhiteTransparent),layout);const lossless=hasLogo||quality==='high'||/image\/(png|webp|svg)/i.test(item.type||String(item.originalDataUrl||'').slice(5,30));pages.push({dataUrl:canvas.toDataURL(lossless?'image/png':'image/jpeg',quality==='high'?.96:.92),width:canvas.width,height:canvas.height,canvas,vector,lossless});
+      const hasHeader=firstHasHeader&&segmentIndex===0,{canvas,ctx}=p2Canvas(scale,layout);let vector=[];if(hasHeader)vector=await p2DrawHeader(ctx,entry,values,assets,project,layout,false);p2DrawSegment(ctx,source,segments[segmentIndex],hasHeader,scale,layout,transform);await p2DrawFooter(ctx,agency,Boolean(project.logoWhiteTransparent),layout);const lossless=preview&&/image\/(png|webp|svg)/i.test(item.type||String(item.originalDataUrl||'').slice(5,30));pages.push({dataUrl:canvas.toDataURL(lossless?'image/png':'image/jpeg',profile.jpegQuality),width:canvas.width,height:canvas.height,canvas,vector,lossless,jpegQuality:profile.jpegQuality});
     }
   }
   const estimate=pages.reduce((sum,page)=>sum+Math.round((String(page.dataUrl).length*3)/4),0);return{pages,mediaLogo:media,assets,qualityRows,estimatedBytes:estimate};
@@ -579,7 +618,7 @@ async function p2DeflateRgb(canvas){
 }
 async function p2PdfPageImage(page){
   if(page.lossless&&page.canvas){const bytes=await p2DeflateRgb(page.canvas);if(bytes)return{bytes,filter:'FlateDecode',width:page.canvas.width,height:page.canvas.height};}
-  const dataUrl=page.canvas?page.canvas.toDataURL('image/jpeg',page.lossless?.98:.96):page.dataUrl;return{bytes:dataUrlBinary(dataUrl),filter:'DCTDecode',width:page.width,height:page.height};
+  const dataUrl=page.canvas?page.canvas.toDataURL('image/jpeg',Number(page.jpegQuality)||.90):page.dataUrl;return{bytes:dataUrlBinary(dataUrl),filter:'DCTDecode',width:page.width,height:page.height};
 }
 async function p2BuildPdfBlob(pages,pageWidth,pageHeight){
   if(!pages.length)throw new Error('ไม่มีหน้าสำหรับ PDF');const objectCount=4+pages.length*3,objects=new Array(objectCount+1),kids=[];objects[1]=pdfTextBytes('<< /Type /Catalog /Pages 2 0 R >>');objects[3]=pdfTextBytes('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');objects[4]=pdfTextBytes('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
@@ -592,6 +631,22 @@ async function p2BuildPdfBlob(pages,pageWidth,pageHeight){
 }
 function p2VectorSvg(page,layout){if(!page.vector||!page.vector.length)return'';return'<svg class="pdf-vector-layer" viewBox="0 0 '+layout.pageW+' '+layout.pageH+'" aria-hidden="true">'+page.vector.map(item=>'<text x="'+item.x+'" y="'+item.y+'" font-family="Arial, sans-serif" font-size="'+item.size+'" font-weight="400">'+esc(item.text)+'</text>').join('')+'</svg>';}
 function p2FormatBytes(bytes){const value=Number(bytes)||0;return value>=1048576?(value/1048576).toFixed(1)+' MB':Math.max(1,Math.round(value/1024))+' KB';}
+async function p2ChoosePdfUnderLimit(profiles,render,targetBytes=P2_DEFAULT_PDF_TARGET_BYTES){
+  let last=null,attempts=0;
+  for(const profile of profiles){
+    attempts++;last=await render(profile);
+    if(last.blob.size<=targetBytes)return{...last,withinLimit:true,attempts,targetBytes};
+  }
+  return{...last,withinLimit:false,attempts,targetBytes};
+}
+async function p2BuildAdaptivePdf(entry,images,values,template,quality,targetBytes=P2_DEFAULT_PDF_TARGET_BYTES){
+  const layout=p2Layout(template==='standard'?'a4':'letter');
+  return p2ChoosePdfUnderLimit(p2CompressionProfiles(quality),async profile=>{
+    const result=template==='standard'?await p2GenerateStandardPages(entry,images,profile,false):await p2GeneratePages(entry,images,values,profile,false);
+    const blob=await p2BuildPdfBlob(result.pages,layout.pageW,layout.pageH);
+    return{blob,result,profile};
+  },targetBytes);
+}
 
 exportCapturePDF=async function(){
   if(!_captureEntryId||!_captureImages.length)return;await openPdfPreview(_captureEntryId);
@@ -620,7 +675,7 @@ async function p2RenderPdfPreview(){
 }
 async function downloadPreviewPdf(){
   if(!p2PreviewReady)return;const entry=entries.find(e=>e.id===p2PreviewEntryId);if(!entry)return;const button=document.getElementById('pdfDownloadBtn'),values=p2PreviewValues(),quality=document.getElementById('previewQuality').value,template=document.getElementById('previewTemplate').value||'news';button.disabled=true;button.textContent='กำลังสร้าง…';
-  try{const effective={...entry,...values,pub:values.publication,url:values.link},result=template==='standard'?await p2GenerateStandardPages(effective,_captureImages,quality,false):await p2GeneratePages(effective,_captureImages,values,quality,false),file=p2OutputFileName(effective,values.publication),layout=p2Layout(template==='standard'?'a4':'letter');if(result.qualityRows.some(row=>row.level==='bad')&&!confirm('ภาพบางรายการต่ำกว่า 100 DPI และอาจอ่านยาก\nยืนยัน Export ต่อหรือไม่?'))return;const pdf=await p2BuildPdfBlob(result.pages,layout.pageW,layout.pageH),saved=await p2SaveBlob(pdf,file,'pdf');const idx=entries.findIndex(e=>e.id===entry.id);entries[idx]={...entries[idx],status:entries[idx].status==='completed'?'completed':'ready',pdfGeneratedAt:new Date().toISOString(),fileName:saved.fileName,updatedAt:new Date().toISOString()};saveProjEntries(_activeProj,entries);renderTable();document.getElementById('pdfPreviewStatus').textContent=(saved.mode==='directory'?'บันทึก ':'ดาวน์โหลด ')+saved.fileName+' แล้ว';toast('✓ บันทึก PDF แล้ว','ok');p2ExportFolderOnce=null;}
+  try{const effective={...entry,...values,pub:values.publication,url:values.link},project=getActiveProject(),targetBytes=Number(project.pdfTargetBytes)||P2_DEFAULT_PDF_TARGET_BYTES,output=await p2BuildAdaptivePdf(effective,_captureImages,values,template,quality,targetBytes),result=output.result,file=p2OutputFileName(effective,values.publication);if(result.qualityRows.some(row=>row.level==='bad')&&!confirm('ภาพบางรายการต่ำกว่า 100 DPI และอาจอ่านยาก\nยืนยัน Export ต่อหรือไม่?'))return;const saved=await p2SaveBlob(output.blob,file,'pdf');const idx=entries.findIndex(e=>e.id===entry.id);entries[idx]={...entries[idx],status:entries[idx].status==='completed'?'completed':'ready',pdfGeneratedAt:new Date().toISOString(),fileName:saved.fileName,updatedAt:new Date().toISOString()};saveProjEntries(_activeProj,entries);renderTable();const sizeText=p2FormatBytes(output.blob.size),warning=output.withinLimit?'':' · เกินเป้าหมาย 1 MB แต่คงความอ่านง่ายไว้';document.getElementById('pdfPreviewStatus').textContent=(saved.mode==='directory'?'บันทึก ':'ดาวน์โหลด ')+saved.fileName+' แล้ว · '+sizeText+warning;toast(output.withinLimit?'✓ บันทึก PDF แล้ว':'บันทึก PDF แล้ว · '+sizeText+' (เกินเป้าหมายคุณภาพขั้นต่ำ)','ok');p2ExportFolderOnce=null;}
   catch(err){toast('สร้าง PDF ไม่สำเร็จ: '+err.message,'err');}
   finally{button.disabled=false;button.textContent='บันทึก PDF';}
 }
@@ -666,7 +721,7 @@ async function downloadBatchZip(onlyFailed=false){
     const directory=await p2WritableDirectory(true),project=getActiveProject(),separate={pdf:false,excel:false,backup:false,...(project.separateOutputFolders||{})},pdfDirectory=directory&&separate.pdf?await directory.getDirectoryHandle('PDF',{create:true}):directory,csvDirectory=directory&&separate.excel?await directory.getDirectoryHandle('Excel',{create:true}):directory;let succeeded=0,failed=0;
     for(let i=0;i<rows.length;i++){
       const row=rows[i],entry=row.entry,values={publication:entry.pub,date:entry.date,link:entry.url,prValue:entry.prValue,duration:entry.duration||''};document.getElementById('batchStatus').textContent='กำลังสร้าง '+(i+1)+'/'+rows.length+' · '+entry.pub;
-      try{const result=row.template==='standard'?await p2GenerateStandardPages(entry,row.images,quality,false):await p2GeneratePages(entry,row.images,values,quality,false),fileName=p2OutputFileName(entry),layout=p2Layout(row.template==='standard'?'a4':'letter'),pdf=await p2BuildPdfBlob(result.pages,layout.pageW,layout.pageH);let savedName=fileName;if(pdfDirectory){savedName=await p2UniqueFileName(pdfDirectory,fileName,project.duplicateMode||'suffix');await p2WriteBlob(pdfDirectory,pdf,savedName);}else files.push({name:fileName,data:new Uint8Array(await pdf.arrayBuffer())});summary.push([savedName,entry.pub,entry.platform,entry.date,result.pages.length,'exported']);row.exportStatus='exported';row.exportError='';succeeded++;const idx=entries.findIndex(e=>e.id===entry.id);if(idx>=0)entries[idx]={...entries[idx],status:entries[idx].status==='completed'?'completed':'ready',pdfGeneratedAt:new Date().toISOString(),fileName:savedName,updatedAt:new Date().toISOString()};}
+      try{const targetBytes=Number(project.pdfTargetBytes)||P2_DEFAULT_PDF_TARGET_BYTES,output=await p2BuildAdaptivePdf(entry,row.images,values,row.template,quality,targetBytes),result=output.result,fileName=p2OutputFileName(entry),pdf=output.blob;let savedName=fileName;if(pdfDirectory){savedName=await p2UniqueFileName(pdfDirectory,fileName,project.duplicateMode||'suffix');await p2WriteBlob(pdfDirectory,pdf,savedName);}else files.push({name:fileName,data:new Uint8Array(await pdf.arrayBuffer())});summary.push([savedName,entry.pub,entry.platform,entry.date,result.pages.length,output.withinLimit?'exported':'exported-over-target']);row.exportStatus='exported';row.exportError=output.withinLimit?'':'เกินเป้าหมาย 1 MB แต่คงคุณภาพขั้นต่ำ';succeeded++;const idx=entries.findIndex(e=>e.id===entry.id);if(idx>=0)entries[idx]={...entries[idx],status:entries[idx].status==='completed'?'completed':'ready',pdfGeneratedAt:new Date().toISOString(),fileName:savedName,updatedAt:new Date().toISOString()};}
       catch(err){failed++;row.exportStatus='failed';row.exportError=err.message;summary.push([p2OutputFileName(entry),entry.pub,entry.platform,entry.date,0,'failed: '+err.message]);}
     }
     if(skip)for(const row of p2BatchRows.filter(r=>r.issues.length))summary.push([p2OutputFileName(row.entry),row.entry.pub,row.entry.platform,row.entry.date,0,'skipped: '+row.issues.join('; ')]);
@@ -699,7 +754,9 @@ restoreBackup=async function(event){
 };
 
 document.addEventListener('DOMContentLoaded',()=>{
-  document.getElementById('captureTemplate').addEventListener('change',event=>{const entry=entries.find(e=>e.id===_captureEntryId),file=document.getElementById('captureFileName');if(entry&&file)file.textContent=p2OutputFileName(entry);const projects=getAllProjects(),idx=projects.findIndex(p=>p.id===_activeProj);if(idx>=0){projects[idx].pdfTemplate=event.target.value;saveProjectList(projects);}p2UpdateCaptureMetrics();});
-  document.getElementById('captureQuality').addEventListener('change',event=>{const projects=getAllProjects(),idx=projects.findIndex(p=>p.id===_activeProj);if(idx>=0){projects[idx].pdfQuality=event.target.value;saveProjectList(projects);}});
+  document.getElementById('captureTemplate').addEventListener('change',event=>{const entry=entries.find(e=>e.id===_captureEntryId),file=document.getElementById('captureFileName');if(entry&&file)file.textContent=p2OutputFileName(entry);p2PersistProjectExportSettings({pdfTemplate:event.target.value,pdfQuality:getActiveProject().pdfQuality||'standard',pdfTargetBytes:getActiveProject().pdfTargetBytes||P2_DEFAULT_PDF_TARGET_BYTES}).catch(error=>toast(error.message,'err'));p2UpdateCaptureMetrics();});
+  document.getElementById('captureQuality').addEventListener('change',event=>{p2PersistProjectExportSettings({pdfTemplate:getActiveProject().pdfTemplate||'news',pdfQuality:event.target.value,pdfTargetBytes:getActiveProject().pdfTargetBytes||P2_DEFAULT_PDF_TARGET_BYTES}).catch(error=>toast(error.message,'err'));});
+  document.getElementById('previewTemplate').addEventListener('change',event=>{const quality=document.getElementById('previewQuality').value||'standard';p2PersistProjectExportSettings({pdfTemplate:event.target.value,pdfQuality:quality,pdfTargetBytes:getActiveProject().pdfTargetBytes||P2_DEFAULT_PDF_TARGET_BYTES}).catch(error=>toast(error.message,'err'));});
+  document.getElementById('previewQuality').addEventListener('change',event=>{const template=document.getElementById('previewTemplate').value||'news';p2PersistProjectExportSettings({pdfTemplate:template,pdfQuality:event.target.value,pdfTargetBytes:getActiveProject().pdfTargetBytes||P2_DEFAULT_PDF_TARGET_BYTES}).catch(error=>toast(error.message,'err'));});
   p2SyncSelection();
 });

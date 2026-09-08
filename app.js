@@ -62,7 +62,7 @@ const DEFAULT_PLATFORM_REGISTRY=[
   {id:'x',name:'X',dbCode:'X',fileCode:'X',builtin:true,active:true,aliases:['Twitter','TW']},
   {id:'youtube',name:'YouTube',dbCode:'YT',fileCode:'YT',builtin:true,active:true,aliases:['yt']},
   {id:'tiktok',name:'TikTok',dbCode:'Tiktok',fileCode:'Tiktok',builtin:true,active:true,aliases:[]},
-  {id:'line-today',name:'LINE TODAY',dbCode:'LINE TODAY',fileCode:'LINE',builtin:true,active:true,aliases:[]},
+  {id:'line-today',name:'LINE TODAY',dbCode:'LINE TODAY',fileCode:'Line Today',builtin:true,active:true,aliases:[]},
   {id:'line',name:'LINE',dbCode:'Line',fileCode:'LINE',builtin:true,active:true,aliases:[]},
   {id:'tv',name:'TV',dbCode:'TV',fileCode:'TV',builtin:true,active:true,aliases:[]},
   {id:'website',name:'Website',dbCode:'',fileCode:'WEB',builtin:true,active:true,aliases:['Web','Online']},
@@ -530,6 +530,7 @@ function normalizePlatformRecord(record){
   if(normalized.id==='tiktok'||normalized.name.toLowerCase()==='tiktok'){
     normalized.dbCode='Tiktok';normalized.fileCode='Tiktok';
   }
+  if(normalized.id==='line-today'&&['line','line-today'].includes(normalized.fileCode.toLowerCase()))normalized.fileCode='Line Today';
   return normalized;
 }
 function getPlatformRegistry(){
@@ -563,7 +564,7 @@ function savePlatformRegistry(registry){
 }
 function getPlatformDefinition(value){
   const needle=String(value||'Website').trim().toLowerCase();
-  return getPlatformRegistry().find(p=>p.name.toLowerCase()===needle||p.aliases.some(a=>a.toLowerCase()===needle))||null;
+  return getPlatformRegistry().find(p=>p.id.toLowerCase()===needle||p.name.toLowerCase()===needle||p.aliases.some(a=>a.toLowerCase()===needle))||null;
 }
 function getPlatformCode(platform,kind='db'){
   const found=getPlatformDefinition(platform);

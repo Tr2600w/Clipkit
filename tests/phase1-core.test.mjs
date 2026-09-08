@@ -494,6 +494,12 @@ test('platform registry controls DB suffixes and file-name abbreviations',()=>{
     testAssert.equal(buildOutputFileName('2026-08-06','KhonkaenPOP','TikTok',{
       name:'MMAD',filePattern:'{YYMMDD}_{Publication}{PlatformSuffix}.pdf'
     }),'260806_KhonkaenPOP - Tiktok.pdf');
+    testAssert.equal(buildOutputFileName('2026-08-06','Daily News','line-today',{
+      name:'MMAD',filePattern:'{YYMMDD}_{Publication}{PlatformSuffix}.pdf'
+    }),'260806_Daily News - Line Today.pdf');
+    testAssert.equal(buildOutputFileName('2026-08-06','Daily News','LINE TODAY',{
+      name:'MMAD',filePattern:'{YYMMDD}_{Publication}{PlatformSuffix}.pdf'
+    }),'260806_Daily News - Line Today.pdf');
     testAssert.equal(buildOutputFileName('2026-08-06','Channel 3','TV',{
       name:'MMAD',filePattern:'{YYMMDD}_{Publication}{PlatformSuffix}.pdf'
     },'2.29 min'),'260806_Channel 3 - TV - 2.29 min.pdf');
@@ -502,6 +508,42 @@ test('platform registry controls DB suffixes and file-name abbreviations',()=>{
     savePlatformRegistry(edited);
     testAssert.equal(makeDbKey('Example Media','Bluesky'),'Example Media - BLUE');
   `);
+});
+
+test('PDF export preferences persist independently for each IndexedDB project',async()=>{
+  const context=loadPhase2();
+  await vm.runInContext(`(async()=>{
+    for(const id of ['project-a','project-b'])await ClipKitRepository.projects.put({
+      id,name:id,clientName:id,settings:{},
+      createdAt:'2026-09-08T00:00:00.000Z',updatedAt:'2026-09-08T00:00:00.000Z',
+      deletedAt:null,recordVersion:1
+    });
+    _activeProj='project-a';installLegacySnapshot(await ClipKitLegacyAdapter.hydrate('project-a'));
+    await p2PersistProjectExportSettings({pdfTemplate:'standard',pdfQuality:'high',pdfTargetBytes:1048576});
+    _activeProj='project-b';installLegacySnapshot(await ClipKitLegacyAdapter.hydrate('project-b'));
+    await p2PersistProjectExportSettings({pdfTemplate:'news',pdfQuality:'standard',pdfTargetBytes:1048576});
+
+    const first=await ClipKitRepository.projects.get('project-a');
+    const second=await ClipKitRepository.projects.get('project-b');
+    testAssert.equal(first.settings.pdfTemplate,'standard');
+    testAssert.equal(first.settings.pdfQuality,'high');
+    testAssert.equal(first.settings.pdfTargetBytes,1048576);
+    testAssert.equal(second.settings.pdfTemplate,'news');
+    testAssert.equal(second.settings.pdfQuality,'standard');
+
+    _activeProj='project-a';installLegacySnapshot(await ClipKitLegacyAdapter.hydrate('project-a'));
+    await Promise.all([
+      p2PersistProjectExportSettings({pdfTemplate:'news'}),
+      p2PersistProjectExportSettings({pdfQuality:'standard'})
+    ]);
+    const updated=await ClipKitRepository.projects.get('project-a');
+    testAssert.equal(updated.settings.pdfTemplate,'news');
+    testAssert.equal(updated.settings.pdfQuality,'standard');
+    await p2PersistProjectExportSettings({agencyLogoMode:'asset',agencyLogoAssetId:'agency-2'});
+    const withLogo=await ClipKitRepository.projects.get('project-a');
+    testAssert.equal(withLogo.settings.agencyLogoMode,'asset');
+    testAssert.equal(withLogo.agencyLogoAssetId,'agency-2');
+  })()`,context);
 });
 
 test('URL metadata date extraction reads common published-date fields',()=>{
@@ -678,7 +720,7 @@ test('Phase 2 Letter naming and logo identities follow the Platform Registry',()
   `);
 });
 
-test('standard output preserves logo pages at 300 DPI with lossless encoding',async()=>{
+test('standard output does not force an entire logo page to lossless 300 DPI',async()=>{
   const context=loadPhase2();
   await vm.runInContext(`(async()=>{
     p2FindMediaLogo=async()=>({dataUrl:'logo'});
@@ -688,13 +730,32 @@ test('standard output preserves logo pages at 300 DPI with lossless encoding',as
     p2DrawFooter=async()=>{};
     p2DrawSegment=()=>{};
     p2Canvas=(scale,layout)=>({ctx:{},canvas:{width:Math.round(layout.pageW*scale),height:Math.round(layout.pageH*scale),toDataURL:type=>'data:'+type+';base64,AAAA'}});
-    for(const preview of [false,true]){
-      const result=await p2GeneratePages({pub:'Example'},[{type:'image/jpeg'}],{},'standard',preview);
-      testAssert.equal(result.pages[0].width,2550);
-      testAssert.equal(result.pages[0].height,3300);
-      testAssert.equal(result.pages[0].lossless,true);
-      testAssert.ok(result.pages[0].dataUrl.startsWith('data:image/png;'));
-    }
+    const result=await p2GeneratePages({pub:'Example'},[{type:'image/jpeg'}],{},'standard',false);
+    testAssert.equal(result.pages[0].width<2550,true);
+    testAssert.equal(result.pages[0].height<3300,true);
+    testAssert.equal(result.pages[0].lossless,false);
+    testAssert.ok(result.pages[0].dataUrl.startsWith('data:image/jpeg;'));
+  })()`,context);
+});
+
+test('adaptive PDF selection keeps the first candidate under 1 MB and reports an oversized fallback',async()=>{
+  const context=loadPhase2();
+  await vm.runInContext(`(async()=>{
+    const profiles=[{id:'sharp'},{id:'balanced'},{id:'minimum'}];
+    const sizes={sharp:1500000,balanced:900000,minimum:700000};
+    const selected=await p2ChoosePdfUnderLimit(profiles,async profile=>({
+      blob:new Blob([new Uint8Array(sizes[profile.id])]),profile
+    }),1048576);
+    testAssert.equal(selected.profile.id,'balanced');
+    testAssert.equal(selected.withinLimit,true);
+    testAssert.equal(selected.attempts,2);
+
+    const oversized=await p2ChoosePdfUnderLimit(profiles,async profile=>({
+      blob:new Blob([new Uint8Array(profile.id==='minimum'?1100000:1400000)]),profile
+    }),1048576);
+    testAssert.equal(oversized.profile.id,'minimum');
+    testAssert.equal(oversized.withinLimit,false);
+    testAssert.equal(oversized.attempts,3);
   })()`,context);
 });
 
